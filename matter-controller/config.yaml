@@ -9,9 +9,14 @@ arch:
 startup: application
 boot: auto
 init: false
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Matter Controller API
 map:
   - share:rw
 options:
   log_level: info
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)
+webui: "http://[HOST]:[PORT:8099]"

@@ -5,16 +5,12 @@ FROM $BUILD_FROM
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    py3-wheel \
-    gcc \
-    python3-dev \
-    musl-dev \
-    libffi-dev \
-    openssl-dev
+    jq
 
 # Install Python packages
 RUN pip3 install --no-cache-dir \
-    python-matter-server==7.0.1
+    fastapi \
+    uvicorn
 
 # Copy data
 COPY run.sh /
