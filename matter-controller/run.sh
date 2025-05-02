@@ -3,6 +3,10 @@
 # Print banner
 bashio::log.info "Starting Schnell Matter Controller"
 
+# Activate virtual environment
+source /opt/venv/bin/activate
+bashio::log.info "Virtual environment activated"
+
 # Get configuration
 LOG_LEVEL=$(bashio::config 'log_level')
 TOKEN_LIFETIME_DAYS=$(bashio::config 'token_lifetime_days' '30')
@@ -39,7 +43,7 @@ export PYTHONPATH="${PYTHONPATH}:/opt/python-matter-server"
 
 # Start the Matter Server in the background
 bashio::log.info "Starting Matter Server on port 5580..."
-python3 -m matter_server.server \
+python -m matter_server.server \
   --storage-path /data/matter_server \
   --log-level error \
   --listen-address 0.0.0.0 \
@@ -52,4 +56,4 @@ bashio::log.info "Matter Server started"
 # Start the Matter Controller API
 bashio::log.info "Starting Schnell Matter Controller API on port 8099..."
 cd /matter_controller
-python3 -m uvicorn api:app --host 0.0.0.0 --port 8099 --log-level $LOG_LEVEL
+python -m uvicorn api:app --host 0.0.0.0 --port 8099 --log-level $LOG_LEVEL

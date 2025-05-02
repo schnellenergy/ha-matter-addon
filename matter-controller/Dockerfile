@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-dev \
     python3-venv \
+    python3-full \
     git \
     build-essential \
     libffi-dev \
@@ -28,15 +29,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 # Install the Matter Server using a more reliable approach
 # First, install the dependencies for the Matter Server
-RUN pip3 install --no-cache-dir \
+RUN pip install --no-cache-dir \
     wheel \
     setuptools \
     cryptography
 
 # Install the Home Assistant Matter packages
-RUN pip3 install --no-cache-dir \
+RUN pip install --no-cache-dir \
     home-assistant-chip-core==2023.11.0 \
     home-assistant-chip-clusters==2023.11.0
 
@@ -45,10 +50,10 @@ RUN mkdir -p /opt && \
     cd /opt && \
     git clone --depth 1 -b ${MATTER_SERVER_VERSION} https://github.com/home-assistant-libs/python-matter-server.git && \
     cd python-matter-server && \
-    pip3 install --no-cache-dir -e .
+    pip install --no-cache-dir -e .
 
 # Install Python packages for our API
-RUN pip3 install --no-cache-dir \
+RUN pip install --no-cache-dir \
     fastapi==0.95.2 \
     uvicorn==0.22.0 \
     pydantic==1.10.8 \
