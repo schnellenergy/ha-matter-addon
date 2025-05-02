@@ -2,10 +2,15 @@ ARG BUILD_FROM
 FROM $BUILD_FROM
 
 # Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
     python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+    py3-pip \
+    py3-wheel \
+    gcc \
+    python3-dev \
+    musl-dev \
+    libffi-dev \
+    openssl-dev
 
 # Install Python packages
 RUN pip3 install --no-cache-dir \
