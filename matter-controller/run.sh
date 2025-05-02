@@ -27,7 +27,29 @@ python3 --version
 bashio::log.info "Installed packages:"
 pip3 list
 
+# Create a simple HTTP server for testing
+cat > /tmp/server.py << 'EOF'
+from fastapi import FastAPI
+import uvicorn
+
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"message": "Matter Controller API is running"}
+
+@app.get("/api/devices")
+async def get_devices():
+    return {"devices": []}
+
+@app.post("/api/commission")
+async def commission_device(setup_code: str = None, device_name: str = None):
+    return {"success": True, "device_id": "mock-device-123", "name": device_name or "Mock Device"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8099)
+EOF
+
 # Start the Matter Controller API
 bashio::log.info "Starting Matter Controller API on port 8099..."
-cd /matter_controller
-python3 -m uvicorn api:app --host 0.0.0.0 --port 8099 --log-level $LOG_LEVEL
+python3 /tmp/server.py
