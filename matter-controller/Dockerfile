@@ -5,6 +5,13 @@ FROM $BUILD_FROM
 RUN apk add --no-cache \
     python3 \
     py3-pip \
+    py3-aiohttp \
+    py3-requests \
+    py3-websockets \
+    py3-wheel \
+    gcc \
+    musl-dev \
+    python3-dev \
     bash
 
 # Install Python packages
@@ -12,10 +19,7 @@ RUN pip3 install --no-cache-dir \
     fastapi==0.95.2 \
     uvicorn==0.22.0 \
     pydantic==1.10.8 \
-    python-jose==3.3.0 \
-    aiohttp==3.8.4 \
-    requests==2.28.2 \
-    websockets==11.0.3
+    python-jose==3.3.0
 
 # Create directories
 RUN mkdir -p /data/matter_controller/credentials \
