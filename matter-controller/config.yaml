@@ -6,8 +6,14 @@ url: "https://github.com/schnellenergy/ha-matter-addon"
 arch:
   - aarch64
   - amd64
-startup: application
-boot: auto
+discovery:
+  - matter
+hassio_api: true
+homeassistant: 2024.6.0
+host_dbus: true
+host_network: true
+startup: services
+stage: stable
 init: false
 ports:
   8099/tcp: 8099

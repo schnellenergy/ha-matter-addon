@@ -1,3 +1,7 @@
 build_from:
-  aarch64: "homeassistant/aarch64-base:latest"
-  amd64: "homeassistant/amd64-base:latest"
+  aarch64: ghcr.io/home-assistant/aarch64-base-debian:bookworm
+  amd64: ghcr.io/home-assistant/amd64-base-debian:bookworm
+
+# Set build arguments
+args:
+  MATTER_SERVER_VERSION: 7.0.1
