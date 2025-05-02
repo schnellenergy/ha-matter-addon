@@ -30,10 +30,8 @@ pip3 list
 # Create a simple HTTP server for testing
 cat > /tmp/server.py << 'EOF'
 from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
-import json
 import time
 import uuid
 from typing import Optional, Dict, Any, List
@@ -42,11 +40,6 @@ from typing import Optional, Dict, Any, List
 class TokenRequest(BaseModel):
     client_id: str
     client_name: str
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str
-    expires_in: int
 
 class CommissionRequest(BaseModel):
     setup_code: str
@@ -77,29 +70,13 @@ SAMPLE_DEVICES = [
 # In-memory token storage
 TOKENS = {}
 
-# Security
-security = HTTPBearer(auto_error=False)
-
 app = FastAPI()
-
-# Helper function to validate token
-async def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials is None:
-        # For testing, allow requests without authentication
-        return {"client_id": "anonymous"}
-
-    token = credentials.credentials
-    if token in TOKENS:
-        return TOKENS[token]
-
-    # For testing, accept any token
-    return {"client_id": "anonymous"}
 
 @app.get("/")
 async def root():
     return {"message": "Matter Controller API is running"}
 
-@app.post("/api/token", response_model=TokenResponse)
+@app.post("/api/token")
 async def create_token(request: TokenRequest):
     # Create a simple token
     token = f"token_{uuid.uuid4()}"
@@ -119,11 +96,11 @@ async def create_token(request: TokenRequest):
     }
 
 @app.get("/api/devices")
-async def get_devices(user: Dict = Depends(validate_token)):
+async def get_devices():
     return {"devices": SAMPLE_DEVICES}
 
 @app.post("/api/commission")
-async def commission_device(request: CommissionRequest, user: Dict = Depends(validate_token)):
+async def commission_device(request: CommissionRequest):
     # Create a new device
     device_id = f"device-{uuid.uuid4()}"
     new_device = {
@@ -147,7 +124,7 @@ async def commission_device(request: CommissionRequest, user: Dict = Depends(val
     }
 
 @app.delete("/api/devices/{device_id}")
-async def remove_device(device_id: str, user: Dict = Depends(validate_token)):
+async def remove_device(device_id: str):
     # Find and remove the device
     for i, device in enumerate(SAMPLE_DEVICES):
         if device["id"] == device_id:
