@@ -1,10 +1,25 @@
 #!/usr/bin/with-contenv bashio
 
-# Get config
+# Get configuration
 LOG_LEVEL=$(bashio::config 'log_level')
+LOG_LEVEL_SDK=$(bashio::config 'log_level_sdk')
+TOKEN_LIFETIME_DAYS=$(bashio::config 'token_lifetime_days')
+ALLOW_EXTERNAL_COMMISSIONING=$(bashio::config 'allow_external_commissioning')
 
-# Create data directory
-mkdir -p /data/matter_controller
+# Export configuration as environment variables
+export LOG_LEVEL
+export LOG_LEVEL_SDK
+export TOKEN_LIFETIME_DAYS
+export ALLOW_EXTERNAL_COMMISSIONING
+export STARTUP_TIME=$(date +%s)
+
+# Configure logging
+mkdir -p /data/logs
+touch /data/logs/matter_controller.log
+
+# Create data directories if they don't exist
+mkdir -p /data/matter_controller/credentials
+mkdir -p /data/matter_server
 
 # Print some debug info
 bashio::log.info "Python version:"
@@ -12,46 +27,7 @@ python3 --version
 bashio::log.info "Installed packages:"
 pip3 list
 
-# Create a simple HTTP server
-cat > /tmp/server.py << 'EOF'
-import http.server
-import socketserver
-import json
-
-PORT = 8099
-
-class MatterHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-
-        if self.path == '/':
-            response = {"message": "Matter Controller API is running"}
-        elif self.path == '/api/devices':
-            response = {"devices": []}
-        else:
-            response = {"error": "Not found"}
-
-        self.wfile.write(json.dumps(response).encode())
-
-    def do_POST(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-
-        if self.path == '/api/commission':
-            response = {"success": True, "device_id": "mock-device-123", "name": "Mock Device"}
-        else:
-            response = {"error": "Not found"}
-
-        self.wfile.write(json.dumps(response).encode())
-
-with socketserver.TCPServer(("", PORT), MatterHandler) as httpd:
-    print(f"Serving at port {PORT}")
-    httpd.serve_forever()
-EOF
-
-# Start the HTTP server
+# Start the Matter Controller API
 bashio::log.info "Starting Matter Controller API on port 8099..."
-python3 /tmp/server.py
+cd /matter_controller
+python3 -m uvicorn api:app --host 0.0.0.0 --port 8099 --log-level $LOG_LEVEL
