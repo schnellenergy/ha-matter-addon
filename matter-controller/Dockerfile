@@ -5,13 +5,24 @@ FROM $BUILD_FROM
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    bash
+    py3-wheel \
+    gcc \
+    python3-dev \
+    musl-dev \
+    libffi-dev \
+    openssl-dev \
+    bash \
+    git
 
 # Install Python packages
 RUN pip3 install --no-cache-dir \
     fastapi==0.95.2 \
     uvicorn==0.22.0 \
-    pydantic==1.10.8
+    pydantic==1.10.8 \
+    python-jose==3.3.0 \
+    aiohttp==3.8.4 \
+    requests==2.28.2 \
+    python-matter-server==5.0.0
 
 # Create directories
 RUN mkdir -p /data/matter_controller/credentials \

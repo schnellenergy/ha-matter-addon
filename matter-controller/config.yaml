@@ -1,4 +1,4 @@
-name: Matter Controller
+name: Schnell Matter Controller
 version: "1.0.0"
 slug: matter_controller
 description: Custom Matter controller with commissioning support for external apps
@@ -11,12 +11,31 @@ boot: auto
 init: false
 ports:
   8099/tcp: 8099
+  5580/tcp: null
 ports_description:
   8099/tcp: Matter Controller API
+  5580/tcp: Matter Server (internal)
 map:
   - share:rw
 options:
   log_level: info
+  log_level_sdk: error
+  token_lifetime_days: 30
+  allow_external_commissioning: true
+  analytics_enabled: true
+  max_log_entries: 1000
+  max_analytics_events: 1000
+  auto_register_with_ha: true
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)
+  log_level_sdk: list(automation|detail|progress|error|none)?
+  token_lifetime_days: int(1,365)
+  allow_external_commissioning: bool
+  analytics_enabled: bool
+  max_log_entries: int(100,10000)
+  max_analytics_events: int(100,10000)
+  auto_register_with_ha: bool
 webui: "http://[HOST]:[PORT:8099]"
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:chip

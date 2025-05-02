@@ -30,7 +30,7 @@ logger = logging.getLogger("matter_controller_api")
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Matter Controller API",
+    title="Schnell Matter Controller API",
     description="API for controlling Matter devices",
     version="1.0.0"
 )
@@ -159,9 +159,9 @@ async def root():
             </style>
         </head>
         <body>
-            <h1>Matter Controller API</h1>
-            <p>This API allows you to interact with Matter devices through the Matter Controller add-on.</p>
-            
+            <h1>Schnell Matter Controller API</h1>
+            <p>This API allows you to interact with Matter devices through the Schnell Matter Controller add-on.</p>
+
             <h2>Authentication</h2>
             <div class="endpoint">
                 <p><span class="method">POST</span> /api/token</p>
@@ -171,7 +171,7 @@ async def root():
   "client_name": "Your Client Name"
 }</code></pre>
             </div>
-            
+
             <h2>Device Management</h2>
             <div class="endpoint">
                 <p><span class="method">POST</span> /api/commission</p>
@@ -181,17 +181,17 @@ async def root():
   "device_name": "Living Room Light"
 }</code></pre>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">GET</span> /api/devices</p>
                 <p>List all commissioned devices</p>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">DELETE</span> /api/devices/{id}</p>
                 <p>Remove a device</p>
             </div>
-            
+
             <h2>Device Control</h2>
             <div class="endpoint">
                 <p><span class="method">POST</span> /api/binding</p>
@@ -202,7 +202,7 @@ async def root():
   "cluster_id": 6
 }</code></pre>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">POST</span> /api/ota/update</p>
                 <p>Trigger an OTA update for a device</p>
@@ -210,34 +210,34 @@ async def root():
   "device_id": "123456"
 }</code></pre>
             </div>
-            
+
             <h2>Analytics and Logging</h2>
             <div class="endpoint">
                 <p><span class="method">POST</span> /api/analytics</p>
                 <p>Get analytics data</p>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">POST</span> /api/logs</p>
                 <p>Get log entries</p>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">GET</span> /api/hub</p>
                 <p>Get information about the Matter hub</p>
             </div>
-            
+
             <h2>WebSocket Endpoints</h2>
             <div class="endpoint">
                 <p><span class="method">WS</span> /ws/devices</p>
                 <p>Real-time device updates</p>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">WS</span> /ws/logs</p>
                 <p>Real-time log updates</p>
             </div>
-            
+
             <div class="endpoint">
                 <p><span class="method">WS</span> /ws/analytics</p>
                 <p>Real-time analytics updates</p>
@@ -250,15 +250,15 @@ async def root():
 async def create_token(request: TokenRequest):
     # Create a new token
     expires_at = datetime.now(tz=datetime.timezone.utc) + timedelta(days=TOKEN_LIFETIME_DAYS)
-    
+
     payload = {
         "sub": request.client_id,
         "name": request.client_name,
         "exp": expires_at
     }
-    
+
     access_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-    
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -269,10 +269,10 @@ async def create_token(request: TokenRequest):
 async def commission_device(request: CommissionRequest, user: Dict = Depends(get_current_user)):
     try:
         device_info = await controller.commission_device(request.setup_code, request.device_name)
-        
+
         # Broadcast to WebSocket clients
         await broadcast_to_websockets("devices", {"event": "device_commissioned", "device": device_info})
-        
+
         return device_info
     except Exception as e:
         logger.error(f"Failed to commission device: {e}")
@@ -293,10 +293,10 @@ async def remove_device(device_id: str, user: Dict = Depends(get_current_user)):
         success = await controller.remove_device(device_id)
         if not success:
             raise HTTPException(status_code=500, detail="Failed to remove device")
-        
+
         # Broadcast to WebSocket clients
         await broadcast_to_websockets("devices", {"event": "device_removed", "device_id": device_id})
-        
+
         return {"success": True}
     except Exception as e:
         logger.error(f"Failed to remove device: {e}")
@@ -369,12 +369,12 @@ async def get_hub_info(user: Dict = Depends(get_current_user)):
 async def websocket_devices(websocket: WebSocket):
     await websocket.accept()
     ws_connections["devices"].append(websocket)
-    
+
     try:
         while True:
             # Wait for a message (ping)
             await websocket.receive_text()
-            
+
             # Send the current device list
             devices = await controller.get_devices()
             await websocket.send_json({"devices": devices})
@@ -389,12 +389,12 @@ async def websocket_devices(websocket: WebSocket):
 async def websocket_logs(websocket: WebSocket):
     await websocket.accept()
     ws_connections["logs"].append(websocket)
-    
+
     try:
         while True:
             # Wait for a message (ping)
             await websocket.receive_text()
-            
+
             # Send the latest logs
             logs = await controller.get_logs(limit=10)
             await websocket.send_json({"logs": logs})
@@ -409,12 +409,12 @@ async def websocket_logs(websocket: WebSocket):
 async def websocket_analytics(websocket: WebSocket):
     await websocket.accept()
     ws_connections["analytics"].append(websocket)
-    
+
     try:
         while True:
             # Wait for a message (ping)
             await websocket.receive_text()
-            
+
             # Send the latest analytics
             analytics = await controller.get_analytics()
             await websocket.send_json({"analytics": analytics})
