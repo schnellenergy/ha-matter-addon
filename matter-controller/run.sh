@@ -12,31 +12,46 @@ python3 --version
 bashio::log.info "Installed packages:"
 pip3 list
 
-# Create a simple API server
-cat > /tmp/api.py << 'EOF'
-from fastapi import FastAPI
-import uvicorn
-import os
+# Create a simple HTTP server
+cat > /tmp/server.py << 'EOF'
+import http.server
+import socketserver
 import json
 
-app = FastAPI(title="Matter Controller API")
+PORT = 8099
 
-@app.get("/")
-async def root():
-    return {"message": "Matter Controller API is running"}
+class MatterHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
 
-@app.get("/api/devices")
-async def get_devices():
-    return {"devices": []}
+        if self.path == '/':
+            response = {"message": "Matter Controller API is running"}
+        elif self.path == '/api/devices':
+            response = {"devices": []}
+        else:
+            response = {"error": "Not found"}
 
-@app.post("/api/commission")
-async def commission_device(setup_code: str = None, device_name: str = None):
-    return {"success": True, "device_id": "mock-device-123", "name": device_name or "Mock Device"}
+        self.wfile.write(json.dumps(response).encode())
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8099)
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+
+        if self.path == '/api/commission':
+            response = {"success": True, "device_id": "mock-device-123", "name": "Mock Device"}
+        else:
+            response = {"error": "Not found"}
+
+        self.wfile.write(json.dumps(response).encode())
+
+with socketserver.TCPServer(("", PORT), MatterHandler) as httpd:
+    print(f"Serving at port {PORT}")
+    httpd.serve_forever()
 EOF
 
-# Start the API server
+# Start the HTTP server
 bashio::log.info "Starting Matter Controller API on port 8099..."
-python3 /tmp/api.py
+python3 /tmp/server.py
