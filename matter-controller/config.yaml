@@ -19,7 +19,6 @@ map:
   - share:rw
 options:
   log_level: info
-  log_level_sdk: error
   token_lifetime_days: 30
   allow_external_commissioning: true
   analytics_enabled: true
@@ -28,7 +27,6 @@ options:
   auto_register_with_ha: true
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)
-  log_level_sdk: list(automation|detail|progress|error|none)?
   token_lifetime_days: int(1,365)
   allow_external_commissioning: bool
   analytics_enabled: bool

@@ -272,27 +272,12 @@ class MatterController:
         logger.info("Getting list of devices")
 
         try:
-            # Use the Matter Server WebSocket API to get all devices
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(self.matter_server_url) as ws:
-                    # Send get devices request
-                    await ws.send_json({
-                        "message_id": str(uuid.uuid4()),
-                        "command": "get_nodes",
-                        "args": {}
-                    })
-
-                    # Wait for response
-                    response = await ws.receive_json()
-
-                    if response.get("status") != "succeeded":
-                        error_message = response.get("error", {}).get("message", "Unknown error")
-                        logger.error(f"Failed to get devices: {error_message}")
-                        # Fall back to stored devices
-                        return list(self.devices["devices"].values())
-
-                    # Get the devices from the response
-                    devices_data = response.get("result", {}).get("nodes", [])
+            # Read devices from the mock Matter Server file
+            devices_file = "/data/matter_server/devices.json"
+            if os.path.exists(devices_file):
+                with open(devices_file, "r") as f:
+                    data = json.load(f)
+                    devices_data = data.get("nodes", [])
 
                     # Convert to our format and merge with stored data
                     devices = []
@@ -305,10 +290,10 @@ class MatterController:
                         # Create device info
                         device_info = {
                             "id": device_id,
-                            "name": stored_data.get("name", f"Matter Device {device_id}"),
+                            "name": device_data.get("name", stored_data.get("name", f"Matter Device {device_id}")),
                             "vendor_id": device_data.get("vendor_id", 0),
                             "product_id": device_data.get("product_id", 0),
-                            "commissioned_at": stored_data.get("commissioned_at", int(time.time())),
+                            "commissioned_at": device_data.get("commissioned_at", stored_data.get("commissioned_at", int(time.time()))),
                             "status": "online",
                             "type": device_data.get("device_type", "unknown")
                         }
@@ -326,6 +311,9 @@ class MatterController:
                     })
 
                     return devices
+            else:
+                logger.warning("Devices file not found, returning stored devices")
+                return list(self.devices["devices"].values())
 
         except Exception as e:
             logger.error(f"Failed to get devices from Matter Server: {e}")
