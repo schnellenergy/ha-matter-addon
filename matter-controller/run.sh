@@ -60,8 +60,7 @@ if python -c "import matter_server" 2>/dev/null; then
         python -m matter_server.server \
           --storage-path /data/matter_server \
           --log-level error \
-          --listen-address 0.0.0.0 \
-          --listen-port 5580 &
+          --listen-address 0.0.0.0 &
         MATTER_SERVER_PID=$!
 
         # Wait for Matter Server to start
