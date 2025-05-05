@@ -17,7 +17,8 @@ RUN apk add --no-cache \
 # Install Python packages
 RUN pip3 install --no-cache-dir \
     fastapi \
-    uvicorn
+    uvicorn \
+    PyJWT
 
 # Copy files
 COPY rootfs/matter_controller /matter_controller

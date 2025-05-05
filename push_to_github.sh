@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Fix debug-install.sh script to use /bin/sh instead of /bin/bash"
+git commit -m "Fix JWT import and port 5580 already in use issue"
 
 # Set the remote repository
 echo "Setting remote repository..."

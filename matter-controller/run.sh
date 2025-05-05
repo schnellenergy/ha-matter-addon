@@ -27,18 +27,28 @@ touch /data/logs/matter_controller.log
 mkdir -p /data/matter_controller/credentials
 mkdir -p /data/matter_server
 
-# Start a mock Matter Server
-bashio::log.info "Starting mock Matter Server on port 5580..."
+# Check if port 5580 is already in use
+if netstat -tuln | grep -q ":5580 "; then
+    bashio::log.info "Port 5580 is already in use, assuming Matter Server is already running"
+else
+    # Start a mock Matter Server
+    bashio::log.info "Starting mock Matter Server on port 5580..."
 
-# Create a simple mock server that listens on port 5580
-python3 -c "
+    # Create a simple mock server that listens on port 5580
+    python3 -c "
 import asyncio
 import websockets
 import json
 import logging
+import socket
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('mock_matter_server')
+
+# Check if port is in use
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
 
 async def handler(websocket):
     logger.info(f'Client connected: {websocket.remote_address}')
@@ -65,16 +75,25 @@ async def handler(websocket):
         logger.info(f'Client disconnected: {websocket.remote_address}')
 
 async def main():
+    # Check if port is already in use
+    if is_port_in_use(5580):
+        logger.warning('Port 5580 is already in use, cannot start mock server')
+        return
+
     logger.info('Starting mock Matter Server on port 5580')
-    async with websockets.serve(handler, '0.0.0.0', 5580):
-        await asyncio.Future()  # Run forever
+    try:
+        async with websockets.serve(handler, '0.0.0.0', 5580):
+            await asyncio.Future()  # Run forever
+    except OSError as e:
+        logger.error(f'Failed to start server: {e}')
 
 asyncio.run(main())
 " &
 
-# Wait for mock server to start
-sleep 2
-bashio::log.info "Mock Matter Server started"
+    # Wait for mock server to start
+    sleep 2
+    bashio::log.info "Mock Matter Server started"
+fi
 
 # Start the Matter Controller API
 bashio::log.info "Starting Schnell Matter Controller API on port 8099..."

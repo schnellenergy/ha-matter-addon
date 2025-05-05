@@ -13,7 +13,7 @@ from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import jwt
+import jwt as jwt
 
 from .controller import MatterController
 
