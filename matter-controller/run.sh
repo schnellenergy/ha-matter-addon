@@ -139,7 +139,87 @@ asyncio.run(main())
     bashio::log.info "Mock Matter Server started"
 fi
 
+# Create a simple mock API if needed
+if [ ! -f /matter_controller/api.py ] || [ ! -f /matter_controller/controller.py ]; then
+    bashio::log.warning "API files not found, creating mock API"
+    mkdir -p /matter_controller
+
+    # Create a simple API file
+    cat > /matter_controller/api.py << 'EOF'
+"""
+Matter Controller API implementation.
+"""
+import os
+import logging
+from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("matter_controller_api")
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Schnell Matter Controller API",
+    description="API for controlling Matter devices",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <html>
+        <head>
+            <title>Matter Controller API</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    max-width: 800px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }
+                h1 {
+                    color: #2c3e50;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Schnell Matter Controller API</h1>
+            <p>This is a mock API for the Matter Controller.</p>
+            <p>The actual implementation is not available.</p>
+        </body>
+    </html>
+    """
+
+@app.get("/api/devices")
+async def get_devices():
+    return {"devices": []}
+
+@app.get("/api/hub")
+async def get_hub_info():
+    return {
+        "version": "1.0.0",
+        "status": "online",
+        "device_count": 0
+    }
+EOF
+fi
+
 # Start the Matter Controller API
 bashio::log.info "Starting Schnell Matter Controller API on port 8099..."
 cd /matter_controller
-python -m uvicorn api:app --host 0.0.0.0 --port 8099 --log-level $LOG_LEVEL
+python -m uvicorn api:app --host 0.0.0.0 --port 8099 --log-level $LOG_LEVEL || {
+    bashio::log.error "Failed to start Matter Controller API"
+    # Keep the container running for debugging
+    tail -f /dev/null
+}

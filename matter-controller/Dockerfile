@@ -64,7 +64,13 @@ RUN pip install --no-cache-dir \
     colorlog \
     zeroconf \
     PyJWT \
-    python-multipart
+    python-multipart \
+    atomicwrites \
+    aiohappyeyeballs \
+    aiorun \
+    coloredlogs \
+    dacite \
+    orjson
 
 # Create directories
 RUN mkdir -p /data/matter_controller/credentials \
