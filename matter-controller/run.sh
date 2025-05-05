@@ -28,7 +28,16 @@ export STARTUP_TIME=$(date +%s)
 
 # Run the debug script to help diagnose installation issues
 bashio::log.info "Running debug script..."
-/usr/bin/debug-install.sh
+if [ -x /usr/bin/debug-install.sh ]; then
+    /usr/bin/debug-install.sh
+else
+    bashio::log.warning "Debug script not found or not executable"
+    # Print some basic debug info
+    bashio::log.info "Python version:"
+    python --version
+    bashio::log.info "Installed packages:"
+    pip list | grep -E 'matter|fastapi|uvicorn'
+fi
 
 # Configure logging
 mkdir -p /data/logs

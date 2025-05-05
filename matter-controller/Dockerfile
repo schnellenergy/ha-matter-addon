@@ -66,16 +66,15 @@ RUN pip install --no-cache-dir \
 # Create directories
 RUN mkdir -p /data/matter_controller/credentials \
     && mkdir -p /data/logs \
-    && mkdir -p /data/matter_server
-
-# Create debug script
-RUN mkdir -p /usr/bin
-COPY rootfs/usr/bin/debug-install.sh /usr/bin/debug-install.sh
-RUN chmod +x /usr/bin/debug-install.sh
+    && mkdir -p /data/matter_server \
+    && mkdir -p /usr/bin
 
 # Copy data for add-on
 COPY rootfs /
 COPY run.sh /
+
+# Ensure scripts have correct permissions
+RUN chmod 755 /usr/bin/debug-install.sh
 RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]
