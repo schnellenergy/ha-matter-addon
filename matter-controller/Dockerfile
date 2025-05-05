@@ -29,6 +29,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Install required libraries
+RUN apt-get update && apt-get install -y \
+    libnl-route-3-200 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Create a virtual environment
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
