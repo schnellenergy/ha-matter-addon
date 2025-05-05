@@ -42,8 +42,8 @@ RUN pip install --no-cache-dir \
 
 # Install the Home Assistant Matter packages
 RUN pip install --no-cache-dir \
-    home-assistant-chip-core==2023.11.0 \
-    home-assistant-chip-clusters==2023.11.0
+    home-assistant-chip-core==2024.11.0 \
+    home-assistant-chip-clusters==2024.11.0
 
 # Clone the Matter Server repository
 RUN mkdir -p /opt && \
