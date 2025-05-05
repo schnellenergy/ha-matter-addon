@@ -52,7 +52,7 @@ RUN mkdir -p /opt && \
     cd python-matter-server && \
     pip install --no-cache-dir -e .
 
-# Install Python packages for our API
+# Install Python packages for our API and Matter Server
 RUN pip install --no-cache-dir \
     fastapi==0.95.2 \
     uvicorn==0.22.0 \
@@ -61,7 +61,10 @@ RUN pip install --no-cache-dir \
     aiohttp==3.8.4 \
     requests==2.28.2 \
     websockets==11.0.3 \
-    colorlog
+    colorlog \
+    zeroconf \
+    PyJWT \
+    python-multipart
 
 # Create directories
 RUN mkdir -p /data/matter_controller/credentials \

@@ -54,15 +54,40 @@ export PYTHONPATH="${PYTHONPATH:-}:/opt/python-matter-server"
 if python -c "import matter_server" 2>/dev/null; then
     # Start the Matter Server in the background
     bashio::log.info "Starting Matter Server on port 5580..."
-    python -m matter_server.server \
-      --storage-path /data/matter_server \
-      --log-level error \
-      --listen-address 0.0.0.0 \
-      --listen-port 5580 &
 
-    # Wait for Matter Server to start
-    sleep 5
-    bashio::log.info "Matter Server started"
+    # Try to start the Matter Server, but don't fail if it doesn't work
+    {
+        python -m matter_server.server \
+          --storage-path /data/matter_server \
+          --log-level error \
+          --listen-address 0.0.0.0 \
+          --listen-port 5580 &
+        MATTER_SERVER_PID=$!
+
+        # Wait for Matter Server to start
+        sleep 5
+
+        # Check if the process is still running
+        if kill -0 $MATTER_SERVER_PID 2>/dev/null; then
+            bashio::log.info "Matter Server started successfully"
+        else
+            bashio::log.warning "Matter Server failed to start, using mock server instead"
+            # Start mock server (will be defined in the else branch below)
+            USE_MOCK_SERVER=true
+        fi
+    } || {
+        bashio::log.warning "Error starting Matter Server, using mock server instead"
+        USE_MOCK_SERVER=true
+    }
+
+    # If we need to use the mock server, set the flag
+    if [ "${USE_MOCK_SERVER:-false}" = "true" ]; then
+        # We'll fall through to the else branch
+        false
+    else
+        # Matter Server started successfully
+        true
+    fi
 else
     # If Matter Server is not available, create a mock server
     bashio::log.warning "Matter Server module not found, starting mock server..."
