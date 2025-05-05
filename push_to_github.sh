@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Fix JWT import and port 5580 already in use issue"
+git commit -m "Fix relative import issue and add fallback API"
 
 # Set the remote repository
 echo "Setting remote repository..."

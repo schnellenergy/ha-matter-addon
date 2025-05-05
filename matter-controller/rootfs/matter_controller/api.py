@@ -15,7 +15,12 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import jwt as jwt
 
-from .controller import MatterController
+# Import the controller directly instead of using relative import
+import sys
+import os
+# Add the current directory to the path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from controller import MatterController
 
 # Configure logging
 logging.basicConfig(
