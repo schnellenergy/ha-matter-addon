@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Fix Matter Controller add-on GLIBC compatibility issue"
+git commit -m "Fix Matter Controller add-on manifest unknown and GLIBC compatibility issues"
 
 # Set the remote repository
 echo "Setting remote repository..."

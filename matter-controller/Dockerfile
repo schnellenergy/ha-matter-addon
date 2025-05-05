@@ -36,15 +36,15 @@ RUN pip install --no-cache-dir \
     setuptools \
     cryptography
 
-# Install the Home Assistant Matter packages
+# Install specific version of GLIBC compatible packages
 RUN pip install --no-cache-dir \
-    home-assistant-chip-core==2023.11.0 \
-    home-assistant-chip-clusters==2023.11.0
+    home-assistant-chip-core==2023.1.0 \
+    home-assistant-chip-clusters==2023.1.0
 
 # Clone the Matter Server repository
 RUN mkdir -p /opt && \
     cd /opt && \
-    git clone --depth 1 -b 7.0.1 https://github.com/home-assistant-libs/python-matter-server.git && \
+    git clone --depth 1 -b 5.0.0 https://github.com/home-assistant-libs/python-matter-server.git && \
     cd python-matter-server && \
     pip install --no-cache-dir -e .
 

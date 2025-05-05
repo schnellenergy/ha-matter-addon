@@ -64,7 +64,12 @@ if python -c "import matter_server" 2>/dev/null; then
         bashio::log.info "Installed packages:"
         pip list | grep -E 'matter|chip'
 
-        # Try to start the Matter Server
+        # Print GLIBC version for debugging
+        bashio::log.info "GLIBC version:"
+        ldd --version | head -n 1
+
+        # Try to start the Matter Server with older version that's compatible with GLIBC
+        cd /opt/python-matter-server
         python -m matter_server.server \
           --storage-path /data/matter_server \
           --log-level error \
