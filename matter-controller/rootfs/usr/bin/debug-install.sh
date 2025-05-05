@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 echo "=== Matter Controller Debug Info ==="
 echo "System Python version:"

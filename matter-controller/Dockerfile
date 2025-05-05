@@ -5,37 +5,21 @@ FROM ${BUILD_FROM}
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    git \
-    build-base \
-    python3-dev \
-    libffi-dev \
-    openssl-dev \
-    avahi-dev \
-    glib-dev \
-    dbus-dev \
-    bash \
+    py3-websockets \
+    py3-requests \
+    py3-aiohttp \
+    py3-pydantic \
+    py3-cryptography \
+    py3-yaml \
     jq \
-    curl \
-    wget
+    curl
 
 # Install Python packages
 RUN pip3 install --no-cache-dir \
-    wheel \
-    setuptools \
-    cryptography \
     fastapi \
-    uvicorn \
-    pydantic \
-    python-jose \
-    aiohttp \
-    requests \
-    websockets \
-    colorlog \
-    PyJWT \
-    python-multipart
+    uvicorn
 
-# Create a simple mock Matter Server
-RUN mkdir -p /opt/matter_server
+# Copy files
 COPY rootfs/matter_controller /matter_controller
 COPY rootfs/usr/bin/debug-install.sh /usr/bin/debug-install.sh
 COPY run.sh /

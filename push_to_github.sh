@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Simplify Matter Controller add-on to use Alpine base image"
+git commit -m "Fix debug-install.sh script to use /bin/sh instead of /bin/bash"
 
 # Set the remote repository
 echo "Setting remote repository..."
