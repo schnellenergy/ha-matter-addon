@@ -1,9 +1,6 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Add Home Assistant Matter Server version
-ARG MATTER_SERVER_VERSION
-
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -13,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-dev \
     python3-venv \
-    python3-full \
     git \
     build-essential \
     libffi-dev \
@@ -29,14 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install required libraries
-RUN apt-get update && apt-get install -y \
-    libnl-route-3-200 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Verify GLIBC version
-RUN /usr/bin/ldd --version
-
 # Create a virtual environment
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -50,17 +38,17 @@ RUN pip install --no-cache-dir \
 
 # Install the Home Assistant Matter packages
 RUN pip install --no-cache-dir \
-    home-assistant-chip-core==2024.11.0 \
-    home-assistant-chip-clusters==2024.11.0
+    home-assistant-chip-core==2023.11.0 \
+    home-assistant-chip-clusters==2023.11.0
 
 # Clone the Matter Server repository
 RUN mkdir -p /opt && \
     cd /opt && \
-    git clone --depth 1 -b ${MATTER_SERVER_VERSION} https://github.com/home-assistant-libs/python-matter-server.git && \
+    git clone --depth 1 -b 7.0.1 https://github.com/home-assistant-libs/python-matter-server.git && \
     cd python-matter-server && \
     pip install --no-cache-dir -e .
 
-# Install Python packages for our API and Matter Server
+# Install Python packages for our API
 RUN pip install --no-cache-dir \
     fastapi==0.95.2 \
     uvicorn==0.22.0 \
@@ -70,15 +58,8 @@ RUN pip install --no-cache-dir \
     requests==2.28.2 \
     websockets==11.0.3 \
     colorlog \
-    zeroconf \
     PyJWT \
-    python-multipart \
-    atomicwrites \
-    aiohappyeyeballs \
-    aiorun \
-    coloredlogs \
-    dacite \
-    orjson
+    python-multipart
 
 # Create directories
 RUN mkdir -p /data/matter_controller/credentials \

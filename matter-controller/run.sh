@@ -57,10 +57,19 @@ if python -c "import matter_server" 2>/dev/null; then
 
     # Try to start the Matter Server, but don't fail if it doesn't work
     {
+        # Print Python path for debugging
+        bashio::log.info "Python path: $PYTHONPATH"
+
+        # Print installed packages for debugging
+        bashio::log.info "Installed packages:"
+        pip list | grep -E 'matter|chip'
+
+        # Try to start the Matter Server
         python -m matter_server.server \
           --storage-path /data/matter_server \
           --log-level error \
-          --listen-address 0.0.0.0 &
+          --listen-address 0.0.0.0 \
+          --listen-port 5580 &
         MATTER_SERVER_PID=$!
 
         # Wait for Matter Server to start

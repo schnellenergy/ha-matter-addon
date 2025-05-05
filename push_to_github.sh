@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Create minimal Matter Controller add-on"
+git commit -m "Fix Matter Controller add-on GLIBC compatibility issue"
 
 # Set the remote repository
 echo "Setting remote repository..."
