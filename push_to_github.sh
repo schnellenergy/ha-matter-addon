@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Make API endpoints accessible without authentication"
+git commit -m "Fix token endpoint 500 error"
 
 # Set the remote repository
 echo "Setting remote repository..."

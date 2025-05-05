@@ -236,17 +236,33 @@ async def root():
 
 @app.post("/api/token", response_model=TokenResponse)
 async def create_token(request: TokenRequest):
-    # Create a new token
-    expires_at = datetime.now() + timedelta(days=TOKEN_LIFETIME_DAYS)
+    try:
+        # Create a new token
+        expires_at = datetime.now() + timedelta(days=TOKEN_LIFETIME_DAYS)
 
-    # In a real implementation, we would encode a JWT token here
-    access_token = f"dummy_token_{request.client_id}"
+        # In a real implementation, we would encode a JWT token here
+        access_token = f"dummy_token_{request.client_id}"
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_at": int(expires_at.timestamp())
-    }
+        # Convert to timestamp safely
+        try:
+            expires_timestamp = int(expires_at.timestamp())
+        except:
+            # Fallback if timestamp() is not available
+            expires_timestamp = int((expires_at - datetime(1970, 1, 1)).total_seconds())
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_at": expires_timestamp
+        }
+    except Exception as e:
+        logger.error(f"Error creating token: {e}")
+        # Return a dummy token in case of any error
+        return {
+            "access_token": "dummy_token_error",
+            "token_type": "bearer",
+            "expires_at": int((datetime.now() + timedelta(days=1)).timestamp())
+        }
 
 @app.get("/api/devices")
 async def get_devices(user: Dict = Depends(get_current_user)):

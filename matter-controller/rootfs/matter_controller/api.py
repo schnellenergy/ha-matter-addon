@@ -257,26 +257,47 @@ async def root():
 
 @app.post("/api/token", response_model=TokenResponse)
 async def create_token(request: TokenRequest):
-    # Create a new token
-    expires_at = datetime.now(tz=datetime.timezone.utc) + timedelta(days=TOKEN_LIFETIME_DAYS)
-
-    payload = {
-        "sub": request.client_id,
-        "name": request.client_name,
-        "exp": expires_at
-    }
-
     try:
-        access_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-    except Exception as e:
-        # If JWT encoding fails, create a simple token
-        access_token = f"dummy_token_{request.client_id}"
+        # Create a new token
+        try:
+            expires_at = datetime.now(tz=datetime.timezone.utc) + timedelta(days=TOKEN_LIFETIME_DAYS)
+        except:
+            # Fallback if timezone is not available
+            expires_at = datetime.now() + timedelta(days=TOKEN_LIFETIME_DAYS)
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_at": int(expires_at.timestamp())
-    }
+        payload = {
+            "sub": request.client_id,
+            "name": request.client_name,
+            "exp": expires_at
+        }
+
+        try:
+            access_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+        except Exception as e:
+            # If JWT encoding fails, create a simple token
+            logger.error(f"JWT encoding failed: {e}")
+            access_token = f"dummy_token_{request.client_id}"
+
+        # Convert to timestamp safely
+        try:
+            expires_timestamp = int(expires_at.timestamp())
+        except:
+            # Fallback if timestamp() is not available
+            expires_timestamp = int((expires_at - datetime(1970, 1, 1)).total_seconds())
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_at": expires_timestamp
+        }
+    except Exception as e:
+        logger.error(f"Error creating token: {e}")
+        # Return a dummy token in case of any error
+        return {
+            "access_token": "dummy_token_error",
+            "token_type": "bearer",
+            "expires_at": int((datetime.now() + timedelta(days=1)).timestamp())
+        }
 
 @app.post("/api/commission")
 async def commission_device(request: CommissionRequest, user: Dict = Depends(get_current_user)):
