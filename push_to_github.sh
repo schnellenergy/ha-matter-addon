@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Fix Matter Controller add-on manifest unknown and GLIBC compatibility issues"
+git commit -m "Simplify Matter Controller add-on to use Alpine base image"
 
 # Set the remote repository
 echo "Setting remote repository..."
