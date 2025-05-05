@@ -105,9 +105,15 @@ cat > /matter_controller/simple_api.py << 'EOF'
 Simple Matter Controller API implementation.
 """
 import logging
-from fastapi import FastAPI
+import uuid
+from datetime import datetime, timedelta
+from typing import Dict, Optional
+
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -129,6 +135,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# JWT secret key (generate a new one each time the add-on starts)
+SECRET_KEY = str(uuid.uuid4())
+ALGORITHM = "HS256"
+
+# Token lifetime
+TOKEN_LIFETIME_DAYS = 30
+
+# OAuth2 scheme (optional for some endpoints)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/token", auto_error=False)
+
+# Models
+class TokenRequest(BaseModel):
+    client_id: str
+    client_name: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_at: int
+
+# Helper function to get current user (optional)
+async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)):
+    if token is None:
+        return None
+    try:
+        # In a real implementation, we would decode the JWT token here
+        return {"client_id": "anonymous"}
+    except Exception:
+        return None
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return """
@@ -145,22 +181,81 @@ async def root():
                 h1 {
                     color: #2c3e50;
                 }
+                h2 {
+                    color: #3498db;
+                    margin-top: 30px;
+                }
+                pre {
+                    background-color: #f8f9fa;
+                    padding: 10px;
+                    border-radius: 5px;
+                    overflow-x: auto;
+                }
+                code {
+                    font-family: monospace;
+                }
+                .endpoint {
+                    margin-bottom: 20px;
+                    padding: 10px;
+                    border-left: 4px solid #3498db;
+                    background-color: #f8f9fa;
+                }
+                .method {
+                    font-weight: bold;
+                    color: #e74c3c;
+                }
             </style>
         </head>
         <body>
             <h1>Schnell Matter Controller API</h1>
             <p>This is a simple API for the Matter Controller.</p>
-            <p>The full implementation is under development.</p>
+
+            <h2>Authentication</h2>
+            <div class="endpoint">
+                <p><span class="method">POST</span> /api/token</p>
+                <p>Get an API token for authentication</p>
+                <pre><code>{
+  "client_id": "your_client_id",
+  "client_name": "Your Client Name"
+}</code></pre>
+            </div>
+
+            <h2>Device Management</h2>
+            <div class="endpoint">
+                <p><span class="method">GET</span> /api/devices</p>
+                <p>List all commissioned devices</p>
+            </div>
+
+            <div class="endpoint">
+                <p><span class="method">GET</span> /api/hub</p>
+                <p>Get information about the Matter hub</p>
+            </div>
         </body>
     </html>
     """
 
+@app.post("/api/token", response_model=TokenResponse)
+async def create_token(request: TokenRequest):
+    # Create a new token
+    expires_at = datetime.now() + timedelta(days=TOKEN_LIFETIME_DAYS)
+
+    # In a real implementation, we would encode a JWT token here
+    access_token = f"dummy_token_{request.client_id}"
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_at": int(expires_at.timestamp())
+    }
+
 @app.get("/api/devices")
-async def get_devices():
+async def get_devices(user: Dict = Depends(get_current_user)):
+    # This endpoint works with or without authentication
     return {"devices": []}
 
 @app.get("/api/hub")
-async def get_hub_info():
+async def get_hub_info(user: Dict = Depends(get_current_user)):
+    # This endpoint works with or without authentication
     return {
         "version": "1.0.0",
         "status": "online",

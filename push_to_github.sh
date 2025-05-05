@@ -16,7 +16,7 @@ git add .
 
 # Commit changes
 echo "Committing changes..."
-git commit -m "Fix relative import issue and add fallback API"
+git commit -m "Make API endpoints accessible without authentication"
 
 # Set the remote repository
 echo "Setting remote repository..."
