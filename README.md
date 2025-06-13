@@ -1,152 +1,133 @@
-# Matter Controller Add-on for Home Assistant
+# CHIP Tool API Server
 
-This add-on provides a custom Matter controller that allows commissioning Matter devices from external applications and integrating them with Home Assistant.
+This project provides a simple Flask-based HTTP API wrapper around the [Connected Home over IP (CHIP)](https://github.com/project-chip/connectedhomeip) command-line tool `chip-tool`. It allows you to trigger CHIP commands via HTTP requests.
 
-## How It Works
+---
 
-This add-on uses the Home Assistant Matter Server as a foundation and adds a custom API layer on top of it. The Matter Server handles the low-level communication with Matter devices, while our API provides additional features like analytics, logging, and a more comprehensive REST API for external applications.
+## 📦 Features
 
-The add-on runs two services:
-1. The Matter Server on port 5580 (internal)
-2. Our custom API on port 8099 (exposed)
+- HTTP API to run `chip-tool` commands
+- JSON request/response format
+- Easily integratable with other services or frontends
+- Docker-compatible setup
+- Home Assistant add-on support
 
-## Features
+---
 
-- **Device Management**: Commission, list, and remove Matter devices
-- **Device Binding**: Create bindings between Matter devices
-- **OTA Updates**: Trigger firmware updates for Matter devices
-- **REST API**: Comprehensive API for integration with external applications
-- **WebSocket Support**: Real-time updates for device status, logs, and analytics
-- **Analytics**: Track device usage and events
-- **Logging**: Detailed logging for troubleshooting
-- **Hub Management**: Manage the Matter hub running on Home Assistant
+## 🛠 Requirements
 
-## Installation
+- Python 3.6+
+- `chip-tool` binary compiled and available
+- Flask and Flask-CORS Python packages
 
-1. Add this repository to your Home Assistant instance:
-   ```
-   https://github.com/schnellenergy/ha-matter-addon
-   ```
-2. Install the "Matter Controller" add-on
-3. Configure the add-on with your preferences
-4. Start the add-on
+---
 
-## Configuration
+## 🚀 Getting Started
 
-The add-on can be configured through the Home Assistant UI. Available options:
+### Running Locally
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `log_level` | The log level for the add-on | `info` |
-| `log_level_sdk` | The log level for the Matter SDK | `error` |
-| `token_lifetime_days` | Number of days before API tokens expire | `30` |
-| `allow_external_commissioning` | Enable/disable external commissioning | `true` |
-| `analytics_enabled` | Enable/disable analytics collection | `true` |
-| `max_log_entries` | Maximum number of log entries to store | `1000` |
-| `max_analytics_events` | Maximum number of analytics events to store | `1000` |
-| `auto_register_with_ha` | Automatically register devices with Home Assistant | `true` |
+#### 1. Clone the Repository
 
-## API Endpoints
-
-The add-on exposes a REST API on port 8099 that can be used to interact with Matter devices:
-
-### Authentication
-
-- `POST /api/token`: Get an API token for authentication
-
-### Device Management
-
-- `POST /api/commission`: Commission a device using a setup code
-- `GET /api/devices`: List all commissioned devices
-- `DELETE /api/devices/{id}`: Remove a device
-
-### Device Control
-
-- `POST /api/binding`: Create a binding between devices
-- `POST /api/ota/update`: Trigger an OTA update for a device
-
-### Analytics and Logging
-
-- `POST /api/analytics`: Get analytics data
-- `POST /api/logs`: Get log entries
-- `GET /api/hub`: Get information about the Matter hub
-
-### WebSocket Endpoints
-
-- `/ws/devices`: Real-time device updates
-- `/ws/logs`: Real-time log updates
-- `/ws/analytics`: Real-time analytics updates
-
-## Usage Examples
-
-### Commissioning a Device
-
-```http
-POST http://homeassistant.local:8099/api/commission
-Authorization: Bearer YOUR_ACCESS_TOKEN
-Content-Type: application/json
-
-{
-  "setup_code": "MT:ABCDEFG",
-  "device_name": "Living Room Light"
-}
+```bash
+git clone https://github.com/your-username/chip-tool-addon-python-server.git
+cd chip-tool-addon-python-server
 ```
 
-### Listing Devices
+#### 2. Install Dependencies
 
-```http
-GET http://homeassistant.local:8099/api/devices
-Authorization: Bearer YOUR_ACCESS_TOKEN
+```bash
+pip install flask flask-cors
 ```
 
-### Creating a Binding
+#### 3. Configure the CHIP Tool Path
 
-```http
-POST http://homeassistant.local:8099/api/binding
-Authorization: Bearer YOUR_ACCESS_TOKEN
-Content-Type: application/json
+Edit `connected_home_ip/python_server/chip_tool_server.py` and update the `CHIP_TOOL_PATH` variable to point to your `chip-tool` binary.
 
-{
-  "source_device_id": "123456",
-  "target_device_id": "789012",
-  "cluster_id": 6
-}
+#### 4. Run the Server
+
+```bash
+python connected_home_ip/python_server/chip_tool_server.py
 ```
 
-## Troubleshooting
+The server will start on port 6000.
 
-If you encounter issues:
+### Running as a Home Assistant Add-on
 
-1. Check the add-on logs for error messages
-2. Ensure that the Matter integration is installed in Home Assistant
-3. Verify that your Home Assistant instance is accessible from your client device
-4. Check that the port 8099 is open and accessible
+#### 1. Add the Repository to Home Assistant
+
+1. In Home Assistant, navigate to **Settings** → **Add-ons** → **Add-on Store**
+2. Click the menu (⋮) in the top right corner and select **Repositories**
+3. Add the URL: `https://github.com/SathanaV-Software-Engineer/chip-tool-addon-python-server`
+4. Click **Add**
+
+#### 2. Install the Add-on
+
+1. Refresh the add-on store
+2. Find "CHIP Tool API" in the list of add-ons
+3. Click **Install**
+4. Start the add-on after installation
+
+The server will be available at `http://homeassistant.local:6000` or `http://[your-ha-ip]:6000`.
+
+---
+
+## 📡 API Endpoints
+
+### Pair a Device
+
+```bash
+curl --location 'http://homeassistant.local:6000/pair' \
+--header 'Content-Type: application/json' \
+--data '{"node_id": "2", "passcode": "12988108191"}'
+```
+
+### Toggle a Device
+
+```bash
+curl --location 'http://homeassistant.local:6000/toggle' \
+--header 'Content-Type: application/json' \
+--data '{"node_id": "2", "endpoint_id": "1"}'
+```
+
+### Bind Devices
+
+```bash
+curl --location 'http://homeassistant.local:6000/bind' \
+--header 'Content-Type: application/json' \
+--data '{
+  "switch_node": 1,
+  "switch_endpoint": 1,
+  "light_node": 2,
+  "light_endpoint": 1
+}'
+```
+
+---
+
+## 🔧 Troubleshooting
 
 ### Common Issues
 
-#### Matter Server Not Starting
+1. **Error: No such file or directory: 'chip-tool'**
+   - Ensure the `CHIP_TOOL_PATH` in the server file points to a valid chip-tool binary
+   - Check if the binary has execute permissions
 
-If the Matter Server fails to start:
+2. **Connection refused**
+   - Verify the server is running and listening on port 6000
+   - Check if any firewall is blocking the connection
 
-1. Check the logs for any error messages related to the Matter Server
-2. Try setting `log_level_sdk` to `detail` for more verbose logging
-3. Restart the add-on
-4. If the issue persists, try uninstalling and reinstalling the add-on
+3. **Home Assistant add-on fails to start**
+   - Check the add-on logs for detailed error information
+   - Ensure your Home Assistant instance meets the system requirements
 
-#### Commissioning Failures
+---
 
-If device commissioning fails:
+## 📝 License
 
-1. Make sure the device is in commissioning mode
-2. Check that the setup code is correct
-3. Ensure the device is within range of your Home Assistant server
-4. Verify that Bluetooth is enabled on your Home Assistant server (if required by the device)
-5. Try setting `log_level_sdk` to `detail` for more verbose logging during commissioning
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Support
+---
 
-For issues and feature requests, please open an issue on the GitHub repository:
-https://github.com/schnellenergy/ha-matter-addon/issues
+## 🤝 Contributing
 
-[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
-[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
+Contributions are welcome! Please feel free to submit a Pull Request.
