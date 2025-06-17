@@ -104,6 +104,23 @@ curl --location 'http://homeassistant.local:6000/bind' \
 
 ---
 
+### Use any chiptool command
+
+```bash
+curl --location 'http://homeassistant.local:6000/command' \
+--header 'Content-Type: application/json' \
+--data '{
+  "args" : [
+        "onoff",
+        "toggle",
+        "11",
+        "1"
+    ]
+}'
+```
+
+---
+
 ## 🔧 Troubleshooting
 
 ### Common Issues
