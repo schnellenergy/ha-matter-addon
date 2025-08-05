@@ -431,21 +431,6 @@ ip link set wlan0 up
 /proc/net/wireless              # Wireless interface info
 ```
 
-## 🤝 Contributing
-
-### Development Setup
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/wifi_onboarding.git
-cd wifi_onboarding
-
-# Test components individually
-python3 onboarding.py              # Web server
-python3 button_monitor.py --test   # GPIO functionality
-./run.sh                          # Complete system
-```
-
 ### Code Standards
 
 - **Python**: PEP 8 compliance
@@ -454,20 +439,3 @@ python3 button_monitor.py --test   # GPIO functionality
 - **Documentation**: Comprehensive inline comments
 - **Logging**: Structured logging with appropriate levels
 
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- Home Assistant community for add-on architecture
-- Flask framework for web interface
-- Various GPIO libraries for Raspberry Pi compatibility
-- dnsmasq and hostapd for network services
-
----
-
-**Version**: 1.0.0  
-**Maintainer**: Your Name <your.email@domain.com>  
-**Home Assistant**: Compatible with all current versions  
-**Last Updated**: August 2025
