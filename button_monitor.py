@@ -6,6 +6,7 @@ Enhanced Button Monitor for Wi-Fi Onboarding Add-on
 - Container-compatible reset functionality
 - Proper debouncing and state management
 - Recovery from GPIO errors
+- LED status integration
 """
 
 import time
@@ -29,8 +30,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def set_led_status(status: str):
+    """Helper function to control the LED by writing to a status file."""
+    try:
+        with open("/tmp/led_status", 'w') as f:
+            f.write(status)
+        logger.info(f"🚥 LED status set to: {status}")
+    except Exception as e:
+        logger.error(f"Failed to write LED status: {e}")
+
 class ButtonMonitor:
-    def __init__(self, gpio_pin=11, hold_time=5, debounce_time=0.05):
+    def __init__(self, gpio_pin=17, hold_time=5, debounce_time=0.05):
         self.gpio_pin = gpio_pin
         self.hold_time = hold_time
         self.debounce_time = debounce_time
@@ -59,15 +69,16 @@ class ButtonMonitor:
             return None
 
     def setup_gpio(self):
-        """Initialize GPIO with multiple fallback methods"""
+        """Initialize GPIO with multiple fallback methods using proven working approach"""
         logger.info(f"Initializing GPIO pin {self.gpio_pin} (Pi 5 compatible)")
         
-        # Try both the configured pin and GPIO 17 (common button pin)
+        # Try both the configured pin and common button pins as fallback
         pins_to_try = [self.gpio_pin]
         if self.gpio_pin != 17:
             pins_to_try.append(17)
-            logger.info(f"Will also try GPIO 17 (physical pin 11) as fallback")
-        
+        if self.gpio_pin != 11:
+            pins_to_try.append(11)
+            
         original_pin = self.gpio_pin
         
         for pin_to_try in pins_to_try:
@@ -85,139 +96,280 @@ class ButtonMonitor:
         return False
     
     def _try_gpio_setup(self):
-        """Try GPIO setup using proven working approach from your old code"""
+        """Try GPIO setup using EXACT same approach as working LED/GPIO tests"""
+        logger.info(f"🔘 BUTTON SETUP: Using same approach as working LED tests")
         logger.info(f"Initializing GPIO pin {self.gpio_pin}")
+        
+        # Debug information
+        import sys
+        logger.info(f"Python executable: {sys.executable}")
+        logger.info(f"Python version: {sys.version}")
 
-        # Method 1: Try lgpio (RPi 5 and modern systems) - from your old code
+        # Method 1: Use EXACT same lgpio approach as working LED tests
         try:
             import lgpio
-            chip = lgpio.gpiochip_open(0)
-            lgpio.gpio_claim_input(chip, self.gpio_pin, lgpio.SET_PULL_UP)
+            logger.info("✅ lgpio import successful")
             
-            # Test that we can read the pin  
-            test_value = lgpio.gpio_read(chip, self.gpio_pin)
-            logger.debug(f"lgpio pin{self.gpio_pin} test read: {test_value}")
+            # Try multiple gpiochips (RPi 5 exposes different chips)
+            chips_to_try = [0, 4, 10, 11, 12, 13]
+            last_err = None
+            for chip_num in chips_to_try:
+                try:
+                    chip = lgpio.gpiochip_open(chip_num)
+                    logger.info(f"✅ lgpio GPIO chip {chip_num} opened")
+                    
+                    # Handle GPIO busy error (common issue on Pi)
+                    try:
+                        lgpio.gpio_claim_input(chip, self.gpio_pin, lgpio.SET_PULL_UP)
+                        logger.info(f"✅ GPIO {self.gpio_pin} claimed as input with pull-up on chip {chip_num}")
+                    except lgpio.error as e:
+                        if "GPIO busy" in str(e):
+                            logger.warning(f"⚠️  GPIO {self.gpio_pin} busy - trying to free it first...")
+                            try:
+                                lgpio.gpio_free(chip, self.gpio_pin)
+                                logger.info(f"✅ GPIO {self.gpio_pin} freed from previous claim on chip {chip_num}")
+                                time.sleep(0.5)
+                                lgpio.gpio_claim_input(chip, self.gpio_pin, lgpio.SET_PULL_UP)
+                                logger.info(f"✅ GPIO {self.gpio_pin} successfully reclaimed on chip {chip_num}")
+                            except Exception as free_error:
+                                logger.error(f"❌ Failed to free/reclaim GPIO {self.gpio_pin} on chip {chip_num}: {free_error}")
+                                lgpio.gpiochip_close(chip)
+                                last_err = e
+                                continue
+                        else:
+                            logger.error(f"❌ GPIO claim error on chip {chip_num}: {e}")
+                            lgpio.gpiochip_close(chip)
+                            last_err = e
+                            continue
+                    
+                    # Test that we can read the pin (same as LED test approach)
+                    test_value = lgpio.gpio_read(chip, self.gpio_pin)
+                    logger.info(f"✅ GPIO {self.gpio_pin} test read on chip {chip_num}: {test_value} ({'PRESSED' if test_value == 0 else 'RELEASED'})")
+                    
+                    self.button_obj = {'chip': chip, 'pin': self.gpio_pin, 'type': 'lgpio_simple', 'chip_num': chip_num}
+                    self.gpio_lib = "lgpio"
+                    logger.info("🎉 SUCCESS: Button using lgpio (same as working LEDs)")
+                    return True
+                except Exception as e:
+                    last_err = e
+                    logger.debug(f"lgpio chip {chip_num} failed: {e}")
+                    try:
+                        # Ensure chip is closed if opened
+                        if 'chip' in locals():
+                            lgpio.gpiochip_close(chip)
+                    except Exception:
+                        pass
+                    continue
             
-            self.button_obj = {'chip': chip, 'pin': self.gpio_pin, 'type': 'lgpio_simple'}
-            self.gpio_lib = "lgpio"
-            logger.info("Using lgpio library")
-            return True
+            if last_err:
+                raise last_err
+            
+        except ImportError as e:
+            logger.error(f"❌ lgpio import failed: {str(e)}")
+            logger.error("   This means GPIO libraries not available in current Python environment")
         except Exception as e:
-            logger.debug(f"lgpio failed: {str(e)}")
+            logger.error(f"❌ lgpio hardware access failed: {str(e)}")
 
-        # Method 2: Try gpiozero (recommended for older systems) - from your old code
+        # Method 2: Try gpiozero with same pin factory as LED tests
         try:
+            import os
             os.environ['GPIOZERO_PIN_FACTORY'] = 'native'
             from gpiozero import Button
+            logger.info("✅ gpiozero import successful")
+            
             button = Button(self.gpio_pin, pull_up=True, bounce_time=0.1)
+            logger.info(f"✅ gpiozero Button({self.gpio_pin}) created")
             
             # Test that we can read the pin
             test_value = button.is_pressed
-            logger.debug(f"gpiozero pin{self.gpio_pin} test read: {test_value}")
+            logger.info(f"✅ gpiozero pin {self.gpio_pin} test read: {test_value}")
             
             self.button_obj = {'button': button, 'type': 'gpiozero_simple'}
             self.gpio_lib = "gpiozero"
-            logger.info("Using gpiozero library")
+            logger.info("🎉 SUCCESS: Button using gpiozero")
             return True
+            
+        except ImportError as e:
+            logger.error(f"❌ gpiozero import failed: {str(e)}")
         except Exception as e:
-            logger.debug(f"gpiozero failed: {str(e)}")
+            logger.error(f"❌ gpiozero hardware access failed: {str(e)}")
 
-        # Method 3: Fallback to file-based button simulation
-        logger.info("All GPIO methods failed, using file-based button simulation")
+        # Method 3: File-based fallback
+        logger.warning("⚠️  HARDWARE GPIO FAILED - All methods failed")
+        logger.warning("⚠️  This shouldn't happen if LEDs are working with same libraries")
+        logger.info("💡 Check if button monitor is using same Python environment as LED controller")
+        
         try:
             button_trigger_file = "/tmp/button_trigger"
             self.button_obj = {'type': 'file_based', 'trigger_file': button_trigger_file}
             self.gpio_lib = "file-based-simulation"
-            logger.info(f"Using file-based button simulation - touch {button_trigger_file} to trigger reset")
+            logger.info(f"✅ File-based button simulation ready")
+            logger.info(f"📁 Trigger: touch {button_trigger_file}")
             return True
         except Exception as e:
-            logger.debug(f"File-based button setup failed: {str(e)}")
+            logger.error(f"❌ File-based button setup failed: {str(e)}")
 
-        logger.error("No working GPIO library found")
+        logger.error("❌ NO WORKING GPIO METHODS FOUND")
         return False
 
-    def setup_sysfs_gpio(self):
-        """Setup GPIO using sysfs interface with container-friendly error handling"""
-        gpio_base = "/sys/class/gpio"
-        gpio_export = f"{gpio_base}/export"
-        gpio_dir = f"{gpio_base}/gpio{self.gpio_pin}"
-        gpio_direction = f"{gpio_dir}/direction"
-        gpio_edge = f"{gpio_dir}/edge"
-        
-        # Check if we can write to sysfs (container limitation check)
-        try:
-            # Test write access
-            test_result = self.run_command(["test", "-w", gpio_export], log_output=False)
-            if test_result and test_result.returncode != 0:
-                raise PermissionError("sysfs GPIO export not writable in container")
-        except:
-            raise PermissionError("sysfs GPIO not accessible in container")
-        
-        # Export GPIO if not already exported
-        if not os.path.exists(gpio_dir):
-            try:
-                with open(gpio_export, 'w') as f:
-                    f.write(str(self.gpio_pin))
-                # Wait for the GPIO directory to be created
-                for _ in range(10):  # Wait up to 1 second
-                    if os.path.exists(gpio_dir):
-                        break
-                    time.sleep(0.1)
-                if not os.path.exists(gpio_dir):
-                    raise Exception(f"GPIO directory {gpio_dir} not created after export")
-            except (PermissionError, OSError) as e:
-                # Container filesystem is read-only for sysfs
-                raise Exception(f"Cannot export GPIO {self.gpio_pin} in container: {e}")
-        
-        # Set direction to input
-        try:
-            with open(gpio_direction, 'w') as f:
-                f.write("in")
-        except (PermissionError, OSError) as e:
-            raise Exception(f"Cannot set GPIO {self.gpio_pin} direction in container: {e}")
-        
-        # Set edge detection to none (for polling)
-        try:
-            if os.path.exists(gpio_edge):
-                with open(gpio_edge, 'w') as f:
-                    f.write("none")
-        except (PermissionError, OSError):
-            # Edge setting is optional, continue without it
-            logger.debug(f"Could not set edge for GPIO {self.gpio_pin}")
-            pass
-
     def is_button_pressed(self):
-        """Check button state using simple approach from your old working code"""
+        """Check button state with explicit debugging"""
         try:
             if not self.button_obj:
                 return False
-                
+
             button_type = self.button_obj.get('type')
-            
+
             if button_type == 'lgpio_simple':
                 import lgpio
                 chip = self.button_obj['chip']
                 pin = self.button_obj['pin']
-                return lgpio.gpio_read(chip, pin) == 0  # Active low with pull-up
-            
+                value = lgpio.gpio_read(chip, pin)
+                # Active low with pull-up: 0 = pressed, 1 = released
+                pressed = (value == 0)
+                return pressed
+
             elif button_type == 'gpiozero_simple':
-                return self.button_obj['button'].is_pressed
-            
+                pressed = self.button_obj['button'].is_pressed
+                return pressed
+
             elif button_type == 'file_based':
                 # Check if trigger file exists and remove it
                 trigger_file = self.button_obj['trigger_file']
                 if os.path.exists(trigger_file):
                     try:
                         os.remove(trigger_file)
+                        logger.info("📁 File-based button trigger detected and removed")
                         return True  # Button press detected
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Failed to remove trigger file: {e}")
                         pass
                 return False
-            
+
         except Exception as e:
-            logger.error(f"Error reading GPIO: {str(e)}")
-        
+            logger.error(f"🔘 Error reading GPIO button: {str(e)}")
+
         return False
+
+    def cleanup_gpio(self):
+        """Clean up GPIO resources using simple approach from reference code"""
+        try:
+            if not self.button_obj:
+                return
+
+            button_type = self.button_obj.get('type')
+
+            if button_type == 'lgpio_simple':
+                import lgpio
+                chip = self.button_obj['chip']
+                lgpio.gpiochip_close(chip)
+                logger.debug("✅ lgpio cleanup completed")
+
+            elif button_type == 'gpiozero_simple':
+                self.button_obj['button'].close()
+                logger.debug("✅ gpiozero cleanup completed")
+
+            elif button_type == 'rpi_gpio':
+                GPIO = self.button_obj['gpio']
+                GPIO.cleanup()
+                logger.debug("✅ RPi.GPIO cleanup completed")
+
+            elif button_type == 'file_based':
+                # Clean up trigger file if it exists
+                try:
+                    trigger_file = self.button_obj['trigger_file']
+                    if os.path.exists(trigger_file):
+                        os.remove(trigger_file)
+                    logger.debug("✅ File-based cleanup completed")
+                except:
+                    pass
+
+            self.button_obj = None
+
+        except Exception as e:
+            logger.debug(f"GPIO cleanup error: {str(e)}")
+
+    def monitor_button_thread(self):
+        """Button monitoring with explicit logging to track button presses"""
+        logger.info(f"🔘 BUTTON MONITORING: GPIO {self.gpio_pin}, hold for {self.hold_time}s to reset")
+        logger.info(f"🔘 BUTTON TYPE: {self.button_obj.get('type') if self.button_obj else 'None'}")
+        
+        hold_counter = 0
+        was_pressed = False
+        last_file_based_message = 0
+        
+        # Add explicit button state logging every 10 seconds for hardware debugging
+        last_status_log = 0
+        
+        try:
+            while self.running:
+                current_pressed = self.is_button_pressed()
+                current_time = time.time()
+                
+                # Log button state every 10 seconds for debugging
+                if current_time - last_status_log > 10:
+                    button_type = self.button_obj.get('type') if self.button_obj else 'None'
+                    logger.info(f"🔘 STATUS: Button type={button_type}, state={'PRESSED' if current_pressed else 'RELEASED'}")
+                    last_status_log = current_time
+                
+                # Special handling for file-based simulation
+                if self.button_obj and self.button_obj.get('type') == 'file_based':
+                    # Show reminder every 5 minutes for file-based simulation
+                    if current_time - last_file_based_message > 300:  # 5 minutes
+                        trigger_file = self.button_obj['trigger_file']
+                        logger.info(f"📁 File-based button active - run 'touch {trigger_file}' to trigger reset")
+                        last_file_based_message = current_time
+                    
+                    if current_pressed:
+                        logger.info("🚨 FILE-BASED RESET TRIGGERED!")
+                        self.reset_wifi_config()
+                        break
+                    
+                    time.sleep(1)
+                    continue
+                
+                # Hardware button monitoring with explicit state change logging
+                if current_pressed:
+                    if not was_pressed:
+                        logger.info(f"🔘 BUTTON PRESSED: GPIO {self.gpio_pin} - starting hold timer")
+                        hold_counter = 0
+                    
+                    hold_counter += 1
+                    
+                    # Provide feedback during hold
+                    if hold_counter == 1:
+                        logger.info(f"🔘 HOLD TIMER: 1/{self.hold_time}s - keep holding...")
+                    elif hold_counter == 3:
+                        logger.info(f"🔘 HOLD TIMER: 3/{self.hold_time}s - keep holding for reset...")
+                    elif hold_counter == self.hold_time - 1:
+                        logger.info(f"🔘 HOLD TIMER: {hold_counter}/{self.hold_time}s - almost there...")
+                    
+                    # Trigger at hold time
+                    if hold_counter >= self.hold_time:
+                        logger.info(f"🚨 FACTORY RESET: Long press detected ({self.hold_time}s)!")
+                        self.reset_wifi_config()
+                        break
+                else:
+                    if was_pressed:
+                        logger.info(f"🔘 BUTTON RELEASED: GPIO {self.gpio_pin} after {hold_counter}s")
+                        if hold_counter < self.hold_time:
+                            logger.info(f"🔘 SHORT PRESS: {hold_counter}s < {self.hold_time}s - no reset")
+                    hold_counter = 0
+                
+                was_pressed = current_pressed
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("🔘 Button monitor interrupted")
+        except Exception as e:
+            logger.error(f"🔘 Button monitor error: {str(e)}")
+            # Try to recover from error
+            if self.reinitialize_gpio():
+                logger.info("🔘 Recovered from GPIO error, continuing...")
+                # Restart monitoring
+                self.monitor_button_thread()
+        finally:
+            self.cleanup_gpio()
 
     def reinitialize_gpio(self):
         """Try to reinitialize GPIO after an error"""
@@ -229,76 +381,15 @@ class ButtonMonitor:
             logger.error(f"GPIO reinitialization failed: {e}")
             return False
 
-    def cleanup_gpio(self):
-        """Clean up GPIO resources using simple approach from your old code"""
-        try:
-            if not self.button_obj:
-                return
-                
-            button_type = self.button_obj.get('type')
-            
-            if button_type == 'lgpio_simple':
-                import lgpio
-                chip = self.button_obj['chip']
-                lgpio.gpiochip_close(chip)
-            
-            elif button_type == 'gpiozero_simple':
-                self.button_obj['button'].close()
-            
-            elif button_type == 'file_based':
-                # Clean up trigger file if it exists
-                try:
-                    trigger_file = self.button_obj['trigger_file']
-                    if os.path.exists(trigger_file):
-                        os.remove(trigger_file)
-                except:
-                    pass
-            
-            self.button_obj = None
-            
-        except Exception as e:
-            logger.debug(f"GPIO cleanup error: {str(e)}")
-
-    def debounce_check(self, current_state):
-        """Debounce button state changes"""
-        current_time = time.time()
-        
-        # If state changed, update timing
-        if current_state != self.is_pressed_state:
-            if current_time - self.last_press_time >= self.debounce_time:
-                self.is_pressed_state = current_state
-                self.last_press_time = current_time
-                
-                if current_state:  # Button pressed
-                    self.press_start_time = current_time
-                    logger.debug("Button press detected")
-                else:  # Button released
-                    press_duration = current_time - self.press_start_time
-                    logger.debug(f"Button released after {press_duration:.2f}s")
-                
-                return True  # State change confirmed
-        
-        return False  # No state change or still debouncing
-
-    def stop_all_network_services(self):
-        """Stop all network services"""
-        logger.info("🛑 Stopping all network services...")
-        services = [
-            "hostapd", "dnsmasq", "wpa_supplicant",
-            "dhcpcd", "udhcpc"
-        ]
-        
-        for service in services:
-            try:
-                self.run_command(["pkill", "-9", "-f", service])
-                logger.debug(f"Stopped {service}")
-                time.sleep(0.2)
-            except Exception as e:
-                logger.debug(f"Failed to stop {service}: {str(e)}")
-
     def reset_wifi_config(self):
         """Completely reset WiFi configuration while preserving ethernet and button monitor"""
-        logger.info("🔄 RESET TRIGGERED - Resetting WiFi configuration...")
+        logger.info("🚨 RESET TRIGGERED - Resetting WiFi configuration...")
+        
+        # Immediate LED feedback
+        try:
+            set_led_status('factory_reset')  # Blinking red to indicate reset in progress
+        except Exception:
+            pass
         
         # 1. Stop WiFi-related services only (preserve ethernet and button monitor)
         logger.info("🛑 Stopping WiFi services only...")
@@ -353,12 +444,16 @@ class ButtonMonitor:
         except Exception as e:
             logger.error(f"Failed to create reset flag: {str(e)}")
 
-        # 5. Signal main process for WiFi reset (don't kill it completely)
+        # 5. Signal main process for factory reset (don't kill it completely)
         try:
-            # Send SIGUSR1 to trigger WiFi reset in main process
-            self.run_command(["pkill", "-USR1", "-f", "onboarding.py"])
-            logger.info("✅ Signaled main process for WiFi reset")
-            time.sleep(3)  # Give it time to process the signal
+            # Prefer factory reset signal (SIGUSR2) to improved_ble_service.py
+            self.run_command(["pkill", "-USR2", "-f", "improved_ble_service.py"])
+            logger.info("✅ Signaled main process for FACTORY RESET (SIGUSR2)")
+            time.sleep(1)
+            # Fallback: also send WiFi reset signal (SIGUSR1)
+            self.run_command(["pkill", "-USR1", "-f", "improved_ble_service.py"])
+            logger.info("ℹ️ Also signaled WiFi reset (SIGUSR1) as fallback")
+            time.sleep(2)  # Give it time to process the signals
         except Exception as e:
             logger.warning(f"Failed to signal main process: {e}")
 
@@ -388,7 +483,7 @@ wpa=0
             time.sleep(2)
             
             # Start hostapd in background
-            subprocess.Popen(["hostapd", "/tmp/hostapd.conf"])
+            subprocess.Popen(["hostapd", "/tmp/hostapd.conf"])  # nosec - executed in controlled environment
             time.sleep(3)
             
             # Start dnsmasq
@@ -403,7 +498,7 @@ wpa=0
                 "--no-resolv",
                 "--no-hosts",
                 "--log-dhcp"
-            ])
+            ])  # nosec - executed in controlled environment
             time.sleep(2)
             
             logger.info("✅ Hotspot mode restored on wlan0")
@@ -414,71 +509,6 @@ wpa=0
         logger.info("🎉 WiFi reset complete - configuration cleared")
         logger.info("📱 Connect to 'WiFi-Setup' to reconfigure")
         logger.info("🌐 Ethernet connections remain active and accessible")
-
-    def monitor_button_thread(self):
-        """Button monitoring using your old working approach"""
-        logger.info(f"Monitoring GPIO {self.gpio_pin}, hold for {self.hold_time}s to reset")
-        
-        hold_counter = 0
-        was_pressed = False
-        last_file_based_message = 0
-        
-        try:
-            while self.running:
-                current_pressed = self.is_button_pressed()
-                
-                # Special handling for file-based simulation
-                if self.button_obj and self.button_obj.get('type') == 'file_based':
-                    current_time = time.time()
-                    # Show reminder every 5 minutes for file-based simulation
-                    if current_time - last_file_based_message > 300:  # 5 minutes
-                        trigger_file = self.button_obj['trigger_file']
-                        logger.info(f"📁 File-based button active - run 'touch {trigger_file}' to trigger reset")
-                        last_file_based_message = current_time
-                    
-                    if current_pressed:
-                        logger.info("🚨 FILE-BASED RESET TRIGGERED!")
-                        self.reset_wifi_config()
-                        break
-                    
-                    time.sleep(1)
-                    continue
-                
-                # Hardware button monitoring (from your old code)
-                if current_pressed:
-                    if not was_pressed:
-                        logger.info("Button pressed - starting hold timer")
-                        hold_counter = 0
-                    
-                    hold_counter += 1
-                    
-                    # Provide feedback at 3 seconds
-                    if hold_counter == 3:
-                        logger.info("Keep holding for reset...")
-                    # Trigger at hold time
-                    elif hold_counter >= self.hold_time:
-                        logger.info(f"Long press detected ({self.hold_time}s)!")
-                        self.reset_wifi_config()
-                        break
-                else:
-                    if was_pressed:
-                        logger.info(f"Button released after {hold_counter}s")
-                    hold_counter = 0
-                
-                was_pressed = current_pressed
-                time.sleep(1)
-                
-        except KeyboardInterrupt:
-            logger.info("Button monitor interrupted")
-        except Exception as e:
-            logger.error(f"Button monitor error: {str(e)}")
-            # Try to recover from error
-            if self.reinitialize_gpio():
-                logger.info("Recovered from GPIO error, continuing...")
-                # Restart monitoring
-                self.monitor_button_thread()
-        finally:
-            self.cleanup_gpio()
 
     def monitor_button(self):
         """Main button monitoring loop with threading"""
@@ -507,6 +537,11 @@ wpa=0
                 # Check if monitoring thread is still alive
                 if not self.monitor_thread.is_alive():
                     logger.warning("Button monitoring thread died, restarting...")
+                    # Reinitialize GPIO before restarting thread
+                    if not self.setup_gpio():
+                        logger.error("Failed to reinitialize GPIO, retrying in 10 seconds...")
+                        time.sleep(10)
+                        continue
                     self.monitor_thread = threading.Thread(target=self.monitor_button_thread)
                     self.monitor_thread.daemon = True
                     self.monitor_thread.start()
@@ -518,134 +553,96 @@ wpa=0
             self.running = False
             self.cleanup_gpio()
 
+    def stop(self):
+        """Stop button monitoring"""
+        self.running = False
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=5)
+        self.cleanup_gpio()
+
     def diagnose_gpio_access(self):
-        """Comprehensive GPIO access diagnostics"""
-        logger.info("🔍 GPIO Diagnostics Starting...")
+        """Diagnostic information for GPIO troubleshooting - Raspberry Pi 5 compatible"""
+        logger.info("=== RASPBERRY PI 5 GPIO DIAGNOSTICS ===")
         
-        # Check device files
+        # Check for Raspberry Pi model
+        try:
+            with open('/proc/device-tree/model', 'r') as f:
+                model = f.read().strip()
+                logger.info(f"🖥️ Detected device: {model}")
+                if "Raspberry Pi 5" in model:
+                    logger.info("✅ Raspberry Pi 5 detected - using RPi 5 specific GPIO chip detection")
+        except Exception as e:
+            logger.info(f"ℹ️ Could not detect Pi model: {e}")
+        
+        # Check for GPIO devices - RPi 5 specific
         gpio_devices = [
-            "/dev/gpiomem",
-            "/dev/gpiochip0", 
-            "/dev/gpiochip1",
-            "/dev/gpiochip2",
-            "/dev/gpiochip3", 
-            "/dev/gpiochip4",
+            "/dev/gpiomem", 
+            "/dev/gpiochip0",   # Legacy
+            "/dev/gpiochip4",   # RPi 5
+            "/dev/gpiochip10",  # RPi 5  
+            "/dev/gpiochip11",  # RPi 5
+            "/dev/gpiochip12",  # RPi 5
+            "/dev/gpiochip13",  # RPi 5
             "/dev/mem"
         ]
         
-        logger.info("📂 Checking GPIO device files:")
         for device in gpio_devices:
-            exists = os.path.exists(device)
-            if exists:
+            if os.path.exists(device):
                 try:
-                    stat_info = os.stat(device)
-                    perms = oct(stat_info.st_mode)[-3:]
-                    logger.info(f"  ✅ {device} (permissions: {perms})")
-                except:
-                    logger.info(f"  ⚠️  {device} (exists but cannot stat)")
+                    stat = os.stat(device)
+                    logger.info(f"✅ {device} exists (permissions: {oct(stat.st_mode)})")
+                except Exception as e:
+                    logger.info(f"❌ {device} exists but stat failed: {e}")
             else:
-                logger.info(f"  ❌ {device} (missing)")
+                logger.info(f"❌ {device} not found")
         
-        # Check sysfs GPIO
-        logger.info("📁 Checking sysfs GPIO:")
-        sysfs_gpio = f"/sys/class/gpio/gpio{self.gpio_pin}"
-        if os.path.exists("/sys/class/gpio"):
-            logger.info("  ✅ /sys/class/gpio exists")
-            try:
-                gpio_list = os.listdir("/sys/class/gpio")
-                logger.info(f"  📋 Available GPIO entries: {gpio_list}")
-            except Exception as e:
-                logger.info(f"  ⚠️  Cannot list /sys/class/gpio: {e}")
-        else:
-            logger.info("  ❌ /sys/class/gpio missing")
-        
-        # Test GPIO library imports
-        logger.info("📚 Testing GPIO library imports:")
-        
-        # Test rpi-lgpio (RPi.GPIO replacement)
-        try:
-            import RPi.GPIO as GPIO
-            logger.info("  ✅ rpi-lgpio (RPi.GPIO replacement) imported successfully")
-            try:
-                # Test basic setup
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-                state = GPIO.input(self.gpio_pin)
-                GPIO.cleanup()
-                logger.info(f"    ✅ rpi-lgpio GPIO test successful (pin {self.gpio_pin} = {state})")
-            except Exception as e:
-                logger.info(f"    ❌ rpi-lgpio GPIO test failed: {e}")
+        # Check GPIO chip information - RPi 5 specific
+        logger.info("🔍 Checking GPIO chips for RPi 5...")
+        chips_found = []
+        for chip_num in [0, 4, 10, 11, 12, 13]:
+            chip_path = f"/dev/gpiochip{chip_num}"
+            if os.path.exists(chip_path):
+                chips_found.append(chip_num)
+                logger.info(f"✅ GPIO chip {chip_num} available")
+                
+                # Try to test GPIO 17 on this chip if lgpio is available
                 try:
-                    GPIO.cleanup()
-                except:
-                    pass
-        except ImportError:
-            logger.info("  ❌ rpi-lgpio not available")
-        except Exception as e:
-            logger.info(f"  ⚠️  rpi-lgpio error: {e}")
+                    import lgpio
+                    chip = lgpio.gpiochip_open(chip_num)
+                    try:
+                        lgpio.gpio_claim_input(chip, 17, lgpio.SET_PULL_UP)
+                        test_value = lgpio.gpio_read(chip, 17)
+                        logger.info(f"   🔧 GPIO 17 on chip {chip_num}: {test_value} (0=pressed, 1=released)")
+                        lgpio.gpio_free(chip, 17)
+                    except Exception as e:
+                        logger.info(f"   ❌ GPIO 17 not available on chip {chip_num}: {e}")
+                    lgpio.gpiochip_close(chip)
+                except ImportError:
+                    logger.info(f"   ❌ lgpio not available to test chip {chip_num}")
+                except Exception as e:
+                    logger.info(f"   ❌ Failed to test chip {chip_num}: {e}")
         
-        # Test gpiozero with different pin factories
-        pin_factories = ['lgpio', 'native']
-        for factory in pin_factories:
+        if chips_found:
+            logger.info(f"📊 Summary: Found {len(chips_found)} GPIO chips: {chips_found}")
+        else:
+            logger.error("❌ No GPIO chips found! This may indicate a permission or kernel issue.")
+        
+        # Check for library installations
+        libraries = [
+            ("lgpio", "import lgpio", "Raspberry Pi 5 preferred"),
+            ("gpiozero", "import gpiozero", "Universal GPIO library"), 
+            ("RPi.GPIO", "import RPi.GPIO", "Legacy GPIO library")
+        ]
+        
+        logger.info("📚 GPIO Library availability:")
+        for lib_name, import_cmd, description in libraries:
             try:
-                os.environ['GPIOZERO_PIN_FACTORY'] = factory
-                from gpiozero import Button
-                button = Button(self.gpio_pin, pull_up=True)
-                state = button.is_pressed
-                button.close()
-                logger.info(f"  ✅ gpiozero with {factory} factory successful (pressed: {state})")
-                break  # Stop after first successful test
+                exec(import_cmd)
+                logger.info(f"✅ {lib_name} library available ({description})")
             except ImportError:
-                logger.info(f"  ❌ gpiozero with {factory} factory not available")
-            except Exception as e:
-                logger.info(f"  ❌ gpiozero with {factory} factory failed: {e}")
+                logger.info(f"❌ {lib_name} library not available ({description})")
         
-        # Test python-periphery
-        try:
-            from periphery import GPIO as PeripheryGPIO
-            gpio_pin = PeripheryGPIO(f"/dev/gpiochip4", self.gpio_pin, "in")
-            gpio_pin.bias = "pull_up"
-            state = gpio_pin.read()
-            gpio_pin.close()
-            logger.info(f"  ✅ python-periphery successful (pin {self.gpio_pin} = {state})")
-        except ImportError:
-            logger.info("  ❌ python-periphery not available")
-        except Exception as e:
-            logger.info(f"  ❌ python-periphery failed: {e}")
-        
-        # Check running processes that might interfere
-        logger.info("🔄 Checking for interfering processes:")
-        try:
-            result = self.run_command(["ps", "aux"])
-            if result and result.returncode == 0:
-                lines = result.stdout.split('\n')
-                gpio_processes = [line for line in lines if 'gpio' in line.lower() and 'button_monitor' not in line]
-                if gpio_processes:
-                    logger.info("  ⚠️  Found GPIO-related processes:")
-                    for proc in gpio_processes:
-                        logger.info(f"    {proc}")
-                else:
-                    logger.info("  ✅ No interfering GPIO processes found")
-        except Exception as e:
-            logger.info(f"  ⚠️  Cannot check processes: {e}")
-        
-        # Check kernel version and platform
-        logger.info("🖥️  System information:")
-        try:
-            with open("/proc/version", "r") as f:
-                kernel_info = f.read().strip()
-                logger.info(f"  📦 Kernel: {kernel_info}")
-        except:
-            pass
-        
-        try:
-            with open("/proc/device-tree/model", "r") as f:
-                model = f.read().strip().replace('\x00', '')
-                logger.info(f"  🔧 Hardware: {model}")
-        except:
-            logger.info("  🔧 Hardware: Unknown")
-        
-        logger.info("🔍 GPIO Diagnostics Complete")
+        logger.info("=== END RPi 5 GPIO DIAGNOSTICS ===")
 
     def get_system_info(self):
         """Get system information for debugging"""
@@ -677,7 +674,7 @@ def main():
     # Parse command line arguments
     import argparse
     parser = argparse.ArgumentParser(description='WiFi Onboarding Button Monitor')
-    parser.add_argument('--pin', type=int, default=11, help='GPIO pin number (default: 11)')
+    parser.add_argument('--pin', type=int, default=17, help='GPIO pin number (default: 17)')
     parser.add_argument('--hold', type=int, default=5, help='Hold time in seconds (default: 5)')
     parser.add_argument('--debounce', type=float, default=0.05, help='Debounce time in seconds (default: 0.05)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -704,14 +701,15 @@ def main():
             logger.info("✅ GPIO setup successful")
             logger.info(f"System info: {monitor.get_system_info()}")
             
-            # Test reading for 10 seconds
-            logger.info("Testing button reading for 10 seconds...")
-            for test_cycle in range(10):
+            # Quick test - just 2 seconds instead of 10
+            logger.info("Testing button reading for 2 seconds...")
+            for test_cycle in range(2):
                 pressed = monitor.is_button_pressed()
                 logger.info(f"Button state: {'PRESSED' if pressed else 'RELEASED'}")
                 time.sleep(1)
             
             monitor.cleanup_gpio()
+            logger.info("✅ Button test completed")
         else:
             logger.error("❌ GPIO setup failed")
             logger.error("See diagnostics above for details")
