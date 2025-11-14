@@ -1,0 +1,920 @@
+Below is the **complete, production-grade guide** for managing your **three optimized JSON structures (home_setup, device_setup, configurations)** in your **Custom Data Storage Hub** using REST API.
+
+This includes:
+
+---
+
+# ✅ **1. The Final 3 JSON Objects (Optimized for Multi-User Sync)**
+
+The best architecture is:
+
+```
+Category: home_setup
+   Key: structure
+Category: device_setup
+   Key: devices
+Category: configurations
+   Key: ui_config
+```
+
+---
+
+## 🏠 **A. HOME SETUP JSON**
+
+```json
+{
+  "home_id": "hm_001",
+  "home_name": "My Smart Home",
+  "home_type": "Duplex",
+
+  "floors": [
+    {
+      "floor_id": "fl_001",
+      "floor_name": "Ground Floor",
+      "rooms": [
+        {
+          "room_id": "rm_001",
+          "room_name": "Office Room",
+          "electrical_boxes": [
+            {
+              "box_id": "bx_001",
+              "box_name": "Office Main Box",
+              "snaps": ["sn_001", "sn_002"]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+
+  "docks": ["dk_001"]
+}
+```
+
+---
+
+## 🔌 **B. DEVICE SETUP JSON**
+
+(Matter device info, labels, pairing status)
+
+```json
+{
+  "snaps": [
+    {
+      "snap_id": "sn_001",
+      "box_id": "bx_001",
+      "room_id": "rm_001",
+      "floor_id": "fl_001",
+      "matter_node_id": 432142,
+      "matter_status": "commissioned",
+      "label": "Office Light",
+      "device_type": "light",
+      "custom_icon": "💡",
+      "is_favorite": true
+    },
+    {
+      "snap_id": "sn_002",
+      "box_id": "bx_001",
+      "room_id": "rm_001",
+      "floor_id": "fl_001",
+      "matter_node_id": null,
+      "matter_status": "not_commissioned",
+      "label": "Fan",
+      "device_type": "fan",
+      "custom_icon": "🌀",
+      "is_favorite": false
+    }
+  ],
+
+  "docks": [
+    {
+      "dock_id": "dk_001",
+      "dock_name": "Living Room Remote",
+      "paired": true,
+      "paired_time": "2025-01-22T10:15:10.000Z",
+      "controls": ["sn_001", "sn_002"],
+      "battery_level": 90
+    }
+  ]
+}
+```
+
+---
+
+## 🎛 **C. CONFIGURATIONS JSON**
+
+(Shared UI customizations)
+
+```json
+{
+  "dashboard": {
+    "pinned_devices": ["sn_001"],
+    "pinned_rooms": ["rm_001"],
+    "layout_mode": "grid"
+  },
+  "sorting": {
+    "room_order": ["rm_001"],
+    "device_order": ["sn_001", "sn_002"]
+  },
+  "custom_icons": {
+    "sn_001": "💡",
+    "sn_002": "🌀"
+  }
+}
+```
+
+---
+
+# 🧩 **2. How the JSONs Must Be Stored in Hub**
+
+### ✔ Category: `home_setup`
+
+✔ Key: `structure`
+
+### ✔ Category: `device_setup`
+
+✔ Key: `devices`
+
+### ✔ Category: `configurations`
+
+✔ Key: `ui_config`
+
+This makes CRUD operations easy and multi-device safe.
+
+---
+
+# 🚀 **3. INITIAL SETUP — Store All 3 JSONs on the Hub**
+
+Use:
+
+```http
+POST /api/data
+```
+
+### **Store Home Setup JSON**
+
+```http
+POST http://<hub-ip>:8100/api/data
+Content-Type: application/json
+
+{
+  "category": "home_setup",
+  "key": "structure",
+  "value": { ...home_setup_json_here... }
+}
+```
+
+---
+
+### **Store Device Setup JSON**
+
+```http
+POST http://<hub-ip>:8100/api/data
+
+{
+  "category": "device_setup",
+  "key": "devices",
+  "value": { ...device_setup_json_here... }
+}
+```
+
+---
+
+### **Store Configurations JSON**
+
+```http
+POST http://<hub-ip>:8100/api/data
+
+{
+  "category": "configurations",
+  "key": "ui_config",
+  "value": { ...configurations_json_here... }
+}
+```
+
+---
+
+# 🔍 **4. How to READ Any Part of the Data**
+
+### Read Home Setup
+
+```http
+GET /api/data/home_setup/structure
+```
+
+### Read Device Setup
+
+```http
+GET /api/data/device_setup/devices
+```
+
+### Read Configurations
+
+```http
+GET /api/data/configurations/ui_config
+```
+
+---
+
+# ✏️ **5. Updating Values (PATCH-like Behavior)**
+
+⚠ Your system does **not support PATCH**.
+
+So updating requires:
+
+### **STEP 1 → GET full JSON**
+
+### **STEP 2 → Modify JSON locally (Flutter)**
+
+### **STEP 3 → POST back entire updated JSON**
+
+---
+
+# ✏️ **A. UPDATE SINGLE VALUE Example**
+
+Changing SNAP label `"Office Light"` to `"Work Light"`
+
+### 1. GET current device setup:
+
+```http
+GET /api/data/device_setup/devices
+```
+
+### 2. Modify JSON in Flutter:
+
+```dart
+json["snaps"][0]["label"] = "Work Light";
+```
+
+### 3. POST updated JSON back:
+
+```http
+POST /api/data
+{
+  "category": "device_setup",
+  "key": "devices",
+  "value": { ...updated_json... }
+}
+```
+
+---
+
+# ➕ **B. ADD NEW ATTRIBUTE Example**
+
+Add `"wifi_signal": -65` to a SNAP:
+
+### Modify Flutter JSON:
+
+```dart
+json["snaps"][0]["wifi_signal"] = -65;
+```
+
+### POST to hub
+
+```http
+POST /api/data
+{
+  "category": "device_setup",
+  "key": "devices",
+  "value": { ...updated_json... }
+}
+```
+
+---
+
+# ➕ **C. ADDING NEW SNAP (e.g. new electrical box added)**
+
+Modify JSON:
+
+```dart
+json["snaps"].add({
+  "snap_id": "sn_003",
+  "box_id": "bx_002",
+  "room_id": "rm_002",
+  "floor_id": "fl_001",
+  "matter_node_id": null,
+  "matter_status": "not_commissioned",
+  "label": "New Light",
+  "device_type": "light"
+});
+```
+
+POST it back.
+
+---
+
+# ❌ **D. DELETE Specific Value or Attribute**
+
+### Example: Remove `"custom_icon"` from sn_001
+
+Modify JSON in Flutter:
+
+```dart
+json["snaps"][0].remove("custom_icon");
+```
+
+POST back.
+
+---
+
+### Example: Remove entire SNAP sn_002
+
+```dart
+json["snaps"].removeWhere((snap) => snap["snap_id"] == "sn_002");
+```
+
+POST back.
+
+---
+
+# 🗑 **6. Deleting an Entire JSON Category**
+
+Delete full configuration:
+
+```http
+DELETE /api/data/configurations/ui_config
+```
+
+---
+
+# 📦 **7. FULL CRUD SUMMARY**
+
+### 📌 **CREATE or UPDATE**
+
+```
+POST /api/data
+{
+  "category": "<category_name>",
+  "key": "<key_name>",
+  "value": <json_object>
+}
+```
+
+### 📌 **READ (single object)**
+
+```
+GET /api/data/<category>/<key>
+```
+
+### 📌 **READ ALL in Category**
+
+```
+GET /api/data/<category>
+```
+
+### 📌 **READ ALL**
+
+```
+GET /api/data
+```
+
+### 📌 **DELETE**
+
+```
+DELETE /api/data/<category>/<key>
+```
+
+---
+
+# 🔌 **8. WebSocket Real-Time Sync**
+
+When any phone updates the JSON:
+
+```javascript
+socket.on('data_updated', (data) => {
+  print("Updated category: ${data['category']}");
+  print("Updated key: ${data['key']}");
+});
+```
+
+All other phones get notified instantly.
+
+---
+
+# 📱 **9. Flutter Implementation (Production Grade)**
+
+✔ Safe updates
+✔ Avoids overwrite conflicts
+✔ Ready for multi-user sync
+
+If you want → I will generate the **full Flutter service** with:
+
+* Safe GET → Modify → POST cycle
+* Device sorting
+* JSON merging
+* WebSocket real-time updates
+
+Just say: **“Generate Flutter service”**
+
+---
+
+# 🎁 **10. If you need, I can also generate:**
+
+✅ Auto-ID generator for home/floor/room/box/snap/dock
+✅ JSON schemas for validation
+✅ CLI tool to inspect hub storage
+✅ Backup/Restore JSON mechanism
+✅ MQTT sync version
+
+---
+
+# ✔ FINAL NOTE
+
+This 3-JSON architecture is:
+
+* Multi-user safe
+* Multi-device safe
+* Easy to maintain
+* Best for home automation systems
+* Matches your current DB system perfectly
+
+---
+
+If you want, I can now generate:
+**“FULL production-ready Flutter code (GET/POST/SAVE) + WebSocket integration + JSON models”**
+
+Just say the word.
+
+
+#######################################################################
+_________________________________________________________
+
+Hello\! This is an excellent project. Designing a scalable and synchronized data architecture is critical, especially given the "replace-only" constraint of your hub's add-on.
+
+Based on your requirements, I have designed a 3-JSON system that is normalized, efficient, and leverages the real-time capabilities of your add-on.
+
+Here is the complete architecture, CRUD documentation, and integration plan.
+
+-----
+
+## 1\. 🗄️ The 3-JSON Data Architecture
+
+We will use a single **category** in the add-on, `home_automation`, to store all three of our JSON objects. This allows us to fetch all data in one call on app load.
+
+  * **Category:** `home_automation`
+  * **Key 1:** `home_setup` (Value: The `HomeSetup` JSON object)
+  * **Key 2:** `device_setup` (Value: The `DeviceSetup` JSON object)
+  * **Key 3:** `configurations` (Value: The `Configurations` JSON object)
+
+### JSON 1: `home_setup`
+
+This JSON defines the **physical structure** of the home. It is a nested tree. Note that the `snap_ids` array contains only the *unique IDs* of the SNAP devices. All other device details are stored in `device_setup` to avoid data duplication.
+
+```json
+{
+  "_version": 1,
+  "_last_updated_by": "user_device_id_abc",
+  "home_id": "home_1001",
+  "name": "My Smart Home",
+  "timezone": "Asia/Kolkata",
+  "floors": [
+    {
+      "floor_id": "floor_2001",
+      "name": "Ground Floor",
+      "level": 0,
+      "rooms": [
+        {
+          "room_id": "room_3001",
+          "name": "Living Room",
+          "icon": "living_room",
+          "boxes": [
+            {
+              "box_id": "box_4001",
+              "name": "Main Switchboard",
+              "location_notes": "Behind the TV",
+              "snap_ids": ["snap_5001", "snap_5002"]
+            }
+          ]
+        },
+        {
+          "room_id": "room_3002",
+          "name": "Kitchen",
+          "icon": "kitchen",
+          "boxes": [
+            {
+              "box_id": "box_4002",
+              "name": "Appliance Board",
+              "location_notes": "Near the fridge",
+              "snap_ids": ["snap_5003"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "floor_id": "floor_2002",
+      "name": "First Floor",
+      "level": 1,
+      "rooms": [
+        {
+          "room_id": "room_3003",
+          "name": "Master Bedroom",
+          "icon": "bedroom_master",
+          "boxes": [
+            {
+              "box_id": "box_4003",
+              "name": "Bedside Board",
+              "location_notes": "",
+              "snap_ids": ["snap_5004"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### JSON 2: `device_setup`
+
+This JSON is a **flat lookup map** (not an array) for all devices. This is highly optimized, allowing you to find any device by its ID (e.g., `device_setup.snaps['snap_5001']`) without iterating through a large list.
+
+  * `snaps` and `docks` are objects where the *key* is the device ID.
+  * Cross-references (`room_id`, `box_id`) link the device back to the `home_setup` structure.
+
+<!-- end list -->
+
+```json
+{
+  "_version": 1,
+  "_last_updated_by": "user_device_id_abc",
+  "snaps": {
+    "snap_5001": {
+      "label": "Fan",
+      "matter_node_id": "matter_node_aaa111",
+      "type": "dimmer",
+      "room_id": "room_3001",
+      "box_id": "box_4001"
+    },
+    "snap_5002": {
+      "label": "Living Light 1",
+      "matter_node_id": "matter_node_bbb222",
+      "type": "switch",
+      "room_id": "room_3001",
+      "box_id": "box_4001"
+    },
+    "snap_5003": {
+      "label": "Chimney",
+      "matter_node_id": "matter_node_ccc333",
+      "type": "switch_heavy_duty",
+      "room_id": "room_3002",
+      "box_id": "box_4002"
+    },
+    "snap_5004": {
+      "label": "Bed Lamp",
+      "matter_node_id": "matter_node_ddd444",
+      "type": "switch",
+      "room_id": "room_3003",
+      "box_id": "box_4003"
+    }
+  },
+  "docks": {
+    "dock_9001": {
+      "label": "Living Remote",
+      "matter_node_id": "matter_node_eee555",
+      "room_id": "room_3001",
+      "battery_level": 88
+    },
+    "dock_9002": {
+      "label": "Bedroom Remote",
+      "matter_node_id": "matter_node_fff666",
+      "room_id": "room_3003",
+      "battery_level": 72
+    }
+  }
+}
+```
+
+### JSON 3: `configurations`
+
+This JSON stores shared settings. All users subscribed to this home will see these settings, allowing for a consistent experience.
+
+```json
+{
+  "_version": 1,
+  "_last_updated_by": "user_device_id_abc",
+  "shared_preferences": {
+    "ui_theme": "dark",
+    "layout_mode": "grid"
+  },
+  "dashboard": {
+    "pinned_devices": ["snap_5002", "snap_5001", "dock_9001"],
+    "quick_actions": ["scene_good_morning", "scene_movie_time"]
+  },
+  "scenes": {
+    "scene_good_morning": {
+      "name": "Good Morning",
+      "actions": [
+        { "device_id": "snap_5004", "state": "on" },
+        { "device_id": "snap_5002", "state": "on" }
+      ]
+    },
+    "scene_movie_time": {
+      "name": "Movie Time",
+      "actions": [
+        { "device_id": "snap_5002", "state": "off" },
+        { "device_id": "snap_5001", "state": "off" }
+      ]
+    }
+  }
+}
+```
+
+-----
+
+## 2\. 🔄 CRUD & Multi-User Workflow
+
+This is the most critical part. Because your add-on has **no PATCH**, you cannot update a single field. You must **Read, Modify, and Write (Replace)** the *entire* JSON object.
+
+The WebSocket is the key to multi-user sync. The strategy is **Last Write Wins**, and the WebSocket ensures all clients converge to the latest state.
+
+### The Multi-User Update Workflow
+
+1.  **App Load:** Flutter app starts.
+2.  **Fetch All:** The app makes *one* API call: `GET /api/data/home_automation`.
+3.  **Load State:** The app receives all 3 JSONs and loads them into a state management solution (like Riverpod or Provider).
+4.  **Listen:** The app connects to the WebSocket and listens for `data_updated` events.
+5.  **User Action (e.g., User A renames "Living Room"):**
+    a.  The app gets the current `home_setup` JSON from its state.
+    b.  It creates a **deep copy** of this JSON.
+    c.  It modifies the copy: `copiedJson['floors'][0]['rooms'][0]['name'] = "Grand Hall";`
+    d.  It increments the version: `copiedJson['_version'] += 1;`
+    e.  It adds a user/device ID: `copiedJson['_last_updated_by'] = "user_A_phone";`
+    f.  The app sends this *entire modified JSON* back to the hub: `POST /api/data` with `key: "home_setup"` and `value: copiedJson`.
+6.  **Hub Broadcast:**
+    a.  The hub *replaces* the `home_setup` JSON on its disk.
+    b.  The hub broadcasts a `data_updated` event to *all* connected clients (including User A).
+    c.  Payload: `{ "action": "set", "category": "home_automation", "key": "home_setup", "value": ... (the new JSON from User A) ... }`
+7.  **All Clients Sync:**
+    a.  User A, User B, and User C *all* receive this WebSocket event.
+    b.  They check `data.key` (it's "home\_setup").
+    c.  They *all* **replace** their local `home_setup` state with the `data.value` from the WebSocket payload.
+8.  **Result:** All devices are now perfectly in sync with the new state. If User B was about to make a change, their app (upon receiving the WebSocket event) will update its base state *before* they can save, preventing a conflict.
+
+-----
+
+## 3\. 📡 REST API Examples (CRUD)
+
+All examples assume a base URL of `http://your-ha-ip:8100` and the category `home_automation`.
+
+### ✔️ Create (Initial Setup)
+
+You only do this once to create the initial, empty structures.
+
+```bash
+# Store the initial Home Setup JSON
+curl -X POST 'http://your-ha-ip:8100/api/data' \
+-H 'Content-Type: application/json' \
+-d '{
+  "category": "home_automation",
+  "key": "home_setup",
+  "value": {
+    "_version": 1,
+    "_last_updated_by": "system_init",
+    "home_id": "home_1001",
+    "name": "My Smart Home",
+    "floors": []
+  }
+}'
+
+# (Repeat for "device_setup" and "configurations")
+```
+
+### ✔️ Read (App Load)
+
+This is the **most efficient way** to get all data your app needs on startup.
+
+```bash
+# Get ALL data in the 'home_automation' category
+curl -X GET 'http://your-ha-ip:8100/api/data/home_automation'
+
+# Expected Response:
+# {
+#   "success": true,
+#   "category": "home_automation",
+#   "data": {
+#     "home_setup": {
+#       "value": { ... home setup json ... },
+#       "timestamp": "...",
+#       "type": "dict"
+#     },
+#     "device_setup": {
+#       "value": { ... device setup json ... },
+#       "timestamp": "...",
+#       "type": "dict"
+#     },
+#     "configurations": {
+#       "value": { ... configurations json ... },
+#       "timestamp": "...",
+#       "type": "dict"
+#     }
+#   }
+# }
+```
+
+### ✔️ Update (Updating a Nested Value)
+
+This example shows renaming a single SNAP device. **Remember: you must send the *entire* `device_setup` object back.**
+
+**Step 1: Get** the current data (your app already has this in its state).
+**Step 2: Modify** it locally.
+**Step 3: Post** the *entire* new object.
+
+```bash
+# POST the ENTIRELY NEW device_setup object
+# (We are only changing "snap_5001" label from "Fan" to "Ceiling Fan")
+curl -X POST 'http://your-ha-ip:8100/api/data' \
+-H 'Content-Type: application/json' \
+-d '{
+  "category": "home_automation",
+  "key": "device_setup",
+  "value": {
+    "_version": 2,
+    "_last_updated_by": "user_A_phone",
+    "snaps": {
+      "snap_5001": {
+        "label": "Ceiling Fan",
+        "matter_node_id": "matter_node_aaa111",
+        "type": "dimmer",
+        "room_id": "room_3001",
+        "box_id": "box_4001"
+      },
+      "snap_5002": { ... (rest of snap_5002 data) ... },
+      "snap_5003": { ... (rest of snap_5003 data) ... },
+      "snap_5004": { ... (rest of snap_5004 data) ... }
+    },
+    "docks": {
+      "dock_9001": { ... (all dock data) ... },
+      "dock_9002": { ... (all dock data) ... }
+    }
+  }
+}'
+```
+
+> **Note:** The hub will now broadcast this entire new `device_setup` object via WebSocket to all other users.
+
+### ✔️ Delete (Factory Reset)
+
+This deletes *one* of the JSONs. Useful for a factory reset.
+
+```bash
+# Delete the entire home structure
+curl -X DELETE 'http://your-ha-ip:8100/api/data/home_automation/home_setup'
+```
+
+-----
+
+## 4\. 📱 Flutter & WebSocket Integration
+
+Here is a practical example of a Flutter service (using Dio & socket.io) that implements the **Read-Modify-Write** and **WebSocket Sync** logic.
+
+### Flutter `HomeAutomationService`
+
+```dart
+import 'package:dio/dio.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // Or your preferred state manager
+
+// --- State Providers (e.g., Riverpod) ---
+// These will hold the live, synced data for your UI
+final homeSetupProvider = StateProvider<Map<String, dynamic>?>((ref) => null);
+final deviceSetupProvider = StateProvider<Map<String, dynamic>?>((ref) => null);
+final configurationsProvider = StateProvider<Map<String, dynamic>?>((ref) => null);
+
+// --- API Service ---
+class HomeAutomationService {
+  final Dio _dio = Dio();
+  final String _baseUrl = 'http://192.168.1.100:8100'; // Your Hub IP
+  final String? _apiKey = null; // Set your API key if you configured one
+  final String _category = 'home_automation';
+  
+  final Reader _read; // For reading/writing to Riverpod state
+  IO.Socket? _socket;
+
+  HomeAutomationService(this._read);
+
+  Options _getOptions() => Options(
+    headers: _apiKey != null ? {'X-API-Key': _apiKey} : null,
+  );
+
+  /// 1. INITIAL LOAD
+  /// Fetches all 3 JSONs at once and populates the app state.
+  Future<void> fetchAllData() async {
+    try {
+      final response = await _dio.get(
+        '$_baseUrl/api/data/$_category',
+        options: _getOptions(),
+      );
+
+      if (response.data['success'] == true) {
+        final data = response.data['data'] as Map<String, dynamic>;
+
+        // Populate local state
+        _read(homeSetupProvider.notifier).state = data['home_setup']?['value'];
+        _read(deviceSetupProvider.notifier).state = data['device_setup']?['value'];
+        _read(configurationsProvider.notifier).state = data['configurations']?['value'];
+      }
+    } catch (e) {
+      print('Error fetching all data: $e');
+    }
+  }
+
+  /// 2. WRITE/UPDATE (Generic)
+  /// Sends an entire modified JSON object to the hub.
+  Future<void> _storeData(String key, Map<String, dynamic> value) async {
+    try {
+      await _dio.post(
+        '$_baseUrl/api/data',
+        data: {
+          'key': key,
+          'value': value,
+          'category': _category,
+        },
+        options: _getOptions(),
+      );
+      // NOTE: We DON'T update the local state here.
+      // We wait for the WebSocket echo to do that.
+      // This ensures we are always in sync with the server.
+    } catch (e) {
+      print('Error storing data ($key): $e');
+    }
+  }
+
+  /// 3. EXAMPLE: Update a SNAP's label (The "Read-Modify-Write" pattern)
+  Future<void> updateSnapLabel(String snapId, String newLabel) async {
+    // 1. READ from local state
+    final currentState = _read(deviceSetupProvider);
+    if (currentState == null) return; // Not loaded yet
+
+    // 2. MODIFY (on a deep copy)
+    final newState = Map<String, dynamic>.from(currentState); // Deep copy
+    // Ensure nested maps are also deep-copied
+    newState['snaps'] = Map<String, dynamic>.from(newState['snaps']);
+    newState['snaps'][snapId] = Map<String, dynamic>.from(newState['snaps'][snapId]);
+
+    newState['snaps'][snapId]['label'] = newLabel;
+    newState['_version'] = (newState['_version'] as int? ?? 0) + 1;
+    newState['_last_updated_by'] = "user_A_phone"; // Get this dynamically
+
+    // 3. WRITE the entire object back
+    await _storeData('device_setup', newState);
+  }
+
+  /// 4. CONNECT TO WEBSOCKET for real-time sync
+  void connectWebSocket() {
+    _socket = IO.io(_baseUrl, <String, dynamic>{
+      'transports': ['websocket'],
+      'autoConnect': true,
+    });
+
+    _socket!.on('connect', (_) => print('Connected to Hub WebSocket'));
+
+    // THIS IS THE MOST IMPORTANT PART FOR SYNCING
+    _socket!.on('data_updated', (data) {
+      print('WebSocket data_updated: $data');
+
+      final String action = data['action'];
+      final String category = data['category'];
+      final String key = data['key'];
+
+      if (category != _category || action == 'delete') {
+        // Handle deletions or other categories if needed
+        return;
+      }
+      
+      final dynamic value = data['value'];
+      if (value == null || value is! Map<String, dynamic>) return;
+
+      // Update the correct local state provider based on the key
+      switch (key) {
+        case 'home_setup':
+          _read(homeSetupProvider.notifier).state = value;
+          break;
+        case 'device_setup':
+          _read(deviceSetupProvider.notifier).state = value;
+          break;
+        case 'configurations':
+          _read(configurationsProvider.notifier).state = value;
+          break;
+      }
+    });
+
+    _socket!.on('disconnect', (_) => print('Disconnected from Hub WebSocket'));
+    _socket!.on('connect_error', (err) => print('WebSocket connect error: $err'));
+  }
+}
+```
+
+-----
+
+## 5\. 💡 Best Practices & Improvements
+
+  * **State Management is Key:** Use a robust state manager in Flutter (like Riverpod or Provider). Your UI should *only* read from those providers. The `HomeAutomationService` is the only thing allowed to *write* to the providers, and it only does so when it receives a WebSocket update.
+  * **Deep Copies:** When modifying a JSON, *always* make a deep copy first. Modifying the state variable directly will cause UI and sync issues.
+  * **Versioning:** The `_version` and `_last_updated_by` fields are not required by the add-on but are invaluable for debugging. You can see *what* client made the last change and how many revisions have happened.
+  * **Error Handling:** The `POST` request could fail (hub offline, etc.). You should build logic to retry the request or revert the local state to prevent the UI from being "stuck" in a state that was never saved.
+  * **Data Size:** This model is very memory-efficient. The largest JSON (`device_setup`) is a flat map, making lookups O(1) complexity. The 100MB storage limit of the add-on will be more than enough for thousands of devices.
+
+This architecture provides a robust, scalable, and multi-user-ready system that strictly adheres to the "replace-only" API of your hub add-on.
+
+Would you like to dive deeper into the Flutter state management setup or discuss error-handling patterns for this workflow?
