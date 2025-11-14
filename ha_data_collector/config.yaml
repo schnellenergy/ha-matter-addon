@@ -1,0 +1,41 @@
+name: "Home Assistant Data Collector"
+description: "Collects Home Assistant events and sends them to Google Sheets for analytics"
+version: "1.0.0"
+slug: "ha_data_collector"
+init: false
+arch:
+  - armhf
+  - armv7
+  - aarch64
+  - amd64
+  - i386
+startup: services
+boot: auto
+map:
+  - "share:rw"
+  - "ssl"
+options:
+  google_sheets_url: "https://script.google.com/macros/s/AKfycbx9babsYCeGm_1oXsHYNzkqlzpZyERB5YwFWSMfutmG9EjUvh7vtyvSuYOOA_q9gXRB/exec"
+  ha_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI5ZjVlM2QyNjQ4ZjQ0NDAwOWE0NWExNjJlMDAwZmRjZSIsImlhdCI6MTczODgxODgwNSwiZXhwIjoyMDU0MTc4ODA1fQ.vOEYd3rL0poOHWUOkf0_QTwxpkzDTtubCzpvlb9zWcY"
+  collect_historical: true
+  batch_size: 100
+  retry_attempts: 3
+  log_level: "DEBUG"
+  excluded_domains: []
+  excluded_entities: []
+  include_attributes: true
+schema:
+  google_sheets_url: url
+  ha_token: str
+  collect_historical: bool
+  batch_size: int(1,1000)
+  retry_attempts: int(1,10)
+  log_level: list(DEBUG|INFO|WARNING|ERROR)
+  excluded_domains: [str]
+  excluded_entities: [str]
+  include_attributes: bool
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: "Web UI for monitoring data collection"
+webui: "http://[HOST]:[PORT:8099]"
