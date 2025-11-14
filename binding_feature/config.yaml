@@ -1,8 +1,8 @@
-name: "Schnell Storage Add-on"
+name: "Matter Device Binding"
 version: "1.0.0"
-slug: "schnell_storage"
-description: "Stores and retrieves all custom data, device bindings, and application data for Schnell Home Automation"
-url: "https://github.com/your-repo/schnell-home-automation"
+slug: "matter_device_binding"
+description: "Create and manage Matter device bindings for Schnell Home Automation"
+url: "https://github.com/schnellenergy/ha-matter-addon"
 startup: "services"
 boot: "auto"
 arch:
