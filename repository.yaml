@@ -1,24 +1,3 @@
 name: Schnell Home Automation Add-ons
 url: https://github.com/schnellenergy/ha-matter-addon
 maintainer: Schnell Energy
-
-addons:
-  chip_tool_api:
-    name: CHIP Tool API
-    description: Python server for Matter device control via chip-tool
-    url: https://github.com/schnellenergy/ha-matter-addon/tree/main/chip_tool_api
-    
-  custom_data_storage:
-    name: Custom Data Storage
-    description: SQLite-based data storage for Home Assistant
-    url: https://github.com/schnellenergy/ha-matter-addon/tree/feature/custom-data-storage
-    
-  ha_data_collector:
-    name: HA Data Collector
-    description: Collect and export Home Assistant data to Google Sheets
-    url: https://github.com/schnellenergy/ha-matter-addon/tree/feature/ha-data-collector
-    
-  binding_feature:
-    name: Matter Device Binding
-    description: Create and manage Matter device bindings
-    url: https://github.com/schnellenergy/ha-matter-addon/tree/feature/binding

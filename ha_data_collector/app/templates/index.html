@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HA Data Collector</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .stat-card .value {
+            font-size: 28px;
+            font-weight: bold;
+            margin: 0;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .status.running {
+            background: #4CAF50;
+            color: white;
+        }
+        .status.error {
+            background: #f44336;
+            color: white;
+        }
+        .actions {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .btn {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 0 10px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn:hover {
+            background: #1976D2;
+        }
+        .btn.test {
+            background: #FF9800;
+        }
+        .btn.test:hover {
+            background: #F57C00;
+        }
+        .log-section {
+            margin-top: 30px;
+        }
+        .log-box {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 11px;
+        }
+        .refresh-info {
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏠 Home Assistant Data Collector</h1>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Events Received</h3>
+                <div class="value" id="events-received">{{ stats.events_received }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Events Processed</h3>
+                <div class="value" id="events-processed">{{ stats.events_processed }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Events Sent</h3>
+                <div class="value" id="events-sent">{{ stats.events_sent }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Events Filtered</h3>
+                <div class="value" id="events-filtered">{{ stats.events_filtered }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Errors</h3>
+                <div class="value" id="errors">{{ stats.errors }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Success Rate</h3>
+                <div class="value" id="success-rate">
+                    {% if stats.events_processed > 0 %}
+                        {{ "%.1f"|format((stats.events_sent / stats.events_processed) * 100) }}%
+                    {% else %}
+                        0%
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div style="text-align: center; margin: 20px 0;">
+            <span class="status running">🟢 Running</span>
+        </div>
+
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin: 20px 0;">
+            <strong>Start Time:</strong> {{ stats.start_time }}<br>
+            <strong>Last Event:</strong> 
+            <span id="last-event">
+                {% if stats.last_event_time %}
+                    {{ stats.last_event_time }}
+                {% else %}
+                    No events yet
+                {% endif %}
+            </span>
+        </div>
+
+        <div class="actions">
+            <button class="btn test" onclick="testConnection()">Test Google Sheets Connection</button>
+            <a href="/api/stats" class="btn" target="_blank">View Raw Stats</a>
+        </div>
+
+        <div class="log-section">
+            <h3>Recent Activity</h3>
+            <div class="log-box" id="activity-log">
+                <div class="timestamp">{{ stats.start_time }}</div>
+                <div>✅ Data Collector started successfully</div>
+                {% if stats.events_processed > 0 %}
+                <div class="timestamp">{{ stats.last_event_time }}</div>
+                <div>📊 Processed {{ stats.events_processed }} events, sent {{ stats.events_sent }} to Google Sheets</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="refresh-info">
+            Page auto-refreshes every 30 seconds | Last updated: <span id="last-updated"></span>
+        </div>
+    </div>
+
+    <script>
+        function updateTimestamp() {
+            document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+        }
+
+        function refreshStats() {
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('events-received').textContent = data.events_received;
+                    document.getElementById('events-processed').textContent = data.events_processed;
+                    document.getElementById('events-sent').textContent = data.events_sent;
+                    document.getElementById('events-filtered').textContent = data.events_filtered;
+                    document.getElementById('errors').textContent = data.errors;
+
+                    const successRate = data.events_processed > 0 ?
+                        ((data.events_sent / data.events_processed) * 100).toFixed(1) : 0;
+                    document.getElementById('success-rate').textContent = successRate + '%';
+
+                    document.getElementById('last-event').textContent =
+                        data.last_event_time || 'No events yet';
+
+                    updateTimestamp();
+                })
+                .catch(error => {
+                    console.error('Error fetching stats:', error);
+                });
+        }
+
+        function testConnection() {
+            const btn = event.target;
+            btn.textContent = 'Testing...';
+            btn.disabled = true;
+            
+            fetch('/api/test')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('✅ Google Sheets connection successful!');
+                    } else {
+                        alert('❌ Connection failed: ' + (data.error || data.response));
+                    }
+                })
+                .catch(error => {
+                    alert('❌ Test failed: ' + error.message);
+                })
+                .finally(() => {
+                    btn.textContent = 'Test Google Sheets Connection';
+                    btn.disabled = false;
+                });
+        }
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshStats, 30000);
+        
+        // Initial timestamp
+        updateTimestamp();
+    </script>
+</body>
+</html>

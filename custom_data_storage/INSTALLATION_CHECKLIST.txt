@@ -1,0 +1,128 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║  ✅ CUSTOM DATA STORAGE ADD-ON - INSTALLATION CHECKLIST              ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+📋 PRE-INSTALLATION CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ Samba Share add-on is installed and running
+□ SSH add-on is installed and enabled
+□ You can access \\homeassistant.local\addon via Samba
+□ You can SSH into Home Assistant
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 STEP 1: DELETE OLD FOLDER (If Exists)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ Open File Explorer (Windows) or Finder (Mac)
+□ Navigate to: \\homeassistant.local\addon\local\
+□ Delete the old "custom_data_storage" folder (if it exists)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📂 STEP 2: COPY FRESH FOLDER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ Copy the entire "custom_data_storage" folder from:
+  /Users/veeramanikandan/projects/schnell_smart_app/schnell-home-automation/
+
+□ Paste it into: \\homeassistant.local\addon\local\
+
+□ Verify the path is: \\homeassistant.local\addon\local\custom_data_storage\
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔧 STEP 3: RUN DIAGNOSTIC SCRIPT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ SSH into Home Assistant:
+  ssh root@homeassistant.local
+
+□ Navigate to add-on folder:
+  cd /addon/local/custom_data_storage
+
+□ Make script executable:
+  chmod +x diagnose_addon.sh
+
+□ Run diagnostic:
+  ./diagnose_addon.sh
+
+□ Verify all checks pass (✅)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 STEP 4: RELOAD ADD-ONS IN HOME ASSISTANT UI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ Open Home Assistant web interface
+□ Go to: Settings → Add-ons
+□ Click the three dots (⋮) in the top right corner
+□ Click "Reload"
+□ Wait 10-15 seconds
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 STEP 5: INSTALL THE ADD-ON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ Scroll down to "Local add-ons" section
+□ Find "Custom Data Storage" (should be visible now!)
+□ Click on it
+□ Click "Install"
+□ Wait for installation to complete
+□ Click "Start"
+□ Verify it's running (green status)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ Add-on shows "Started" status
+□ Web UI is accessible at: http://homeassistant.local:8100
+□ Health check works: http://homeassistant.local:8100/health
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔍 TROUBLESHOOTING (If Add-on Doesn't Show)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Via SSH, run:
+
+□ Check folder exists:
+  ls -la /addon/local/custom_data_storage/
+
+□ Check for duplicate configs (should only show config.yaml):
+  ls -la /addon/local/custom_data_storage/config.*
+
+□ Check supervisor logs:
+  ha supervisor logs | grep -i custom_data_storage
+
+□ Force reload:
+  ha supervisor reload
+
+□ List all add-ons:
+  ha addons
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📚 DOCUMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Quick Start:        documents/QUICK_START.md
+Installation:       documents/FIXED_INSTALLATION_STEPS.md
+Troubleshooting:    documents/TROUBLESHOOTING.md
+All Docs:           documents/README.md
+Changes Summary:    CHANGES_SUMMARY.md
+Folder Structure:   STRUCTURE.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ WHAT WAS FIXED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ Removed duplicate config.json (was causing conflicts)
+✅ Updated config.yaml with required fields
+✅ Simplified build.yaml
+✅ Organized all documentation into documents/ folder
+✅ Organized all tests into tests/ folder
+✅ Organized all examples into examples/ folder
+✅ Created diagnostic tools
+✅ Validated all configurations
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎉 The add-on is now ready for installation!
+

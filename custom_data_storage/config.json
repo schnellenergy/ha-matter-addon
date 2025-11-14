@@ -1,0 +1,37 @@
+{
+  "name": "Custom Data Storage",
+  "description": "Store and access custom values for home automation app via REST API and WebSocket",
+  "version": "1.0.1",
+  "slug": "custom_data_storage",
+  "url": "https://github.com/schnell-technology/home-automation-addons",
+  "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "hassio_api": true,
+  "hassio_role": "default",
+  "options": {
+    "log_level": "info",
+    "storage_path": "/data/custom_storage",
+    "max_storage_size_mb": 2000,
+    "enable_websocket": true,
+    "enable_cors": true,
+    "api_key": ""
+  },
+  "schema": {
+    "log_level": "list(trace|debug|info|warning|error|fatal)?",
+    "storage_path": "str?",
+    "max_storage_size_mb": "int(100,10000)?",
+    "enable_websocket": "bool?",
+    "enable_cors": "bool?",
+    "api_key": "str?"
+  },
+  "ports": {
+    "8100/tcp": 8100
+  },
+  "ports_description": {
+    "8100/tcp": "Custom Data Storage API"
+  },
+  "webui": "http://[HOST]:8100"
+}
+

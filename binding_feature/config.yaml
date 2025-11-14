@@ -1,0 +1,49 @@
+name: "Schnell Storage Add-on"
+version: "1.0.0"
+slug: "schnell_storage"
+description: "Stores and retrieves all custom data, device bindings, and application data for Schnell Home Automation"
+url: "https://github.com/your-repo/schnell-home-automation"
+startup: "services"
+boot: "auto"
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+ports:
+  8080/tcp: 8080
+options:
+  log_level:
+    description: "Log level for the add-on"
+    type: "list"
+    default: "info"
+    options:
+      - "debug"
+      - "info"
+      - "warning"
+      - "error"
+  ha_token:
+    description: "Home Assistant Long-Lived Access Token (optional for WebSocket integration)"
+    type: "password"
+    default: ""
+  auto_backup:
+    description: "Enable automatic database backup"
+    type: "bool"
+    default: true
+  backup_interval_hours:
+    description: "Backup interval in hours"
+    type: "int"
+    default: 24
+    min: 1
+    max: 168
+schema:
+  log_level: "list(debug|info|warning|error)"
+  ha_token: "password?"
+  auto_backup: "bool"
+  backup_interval_hours: "int(1,168)"
+map:
+  - config:rw
+  - data:rw
+  - backup:rw
+image: "ghcr.io/home-assistant/{arch}-addon-schnell-storage"
