@@ -1,8 +1,8 @@
-name: "Schnell Storage Add-on"
+name: "Binding Feature"
 version: "1.0.0"
-slug: "schnell_storage"
-description: "Stores and retrieves all custom data, device bindings, and application data for Schnell Home Automation"
-url: "https://github.com/your-repo/schnell-home-automation"
+slug: "binding_feature"
+description: "Create and manage Matter device bindings for Schnell Home Automation"
+url: "https://github.com/schnellenergy/ha-matter-addon"
 startup: "services"
 boot: "auto"
 arch:
@@ -23,10 +23,10 @@ options:
       - "info"
       - "warning"
       - "error"
-  ha_token:
-    description: "Home Assistant Long-Lived Access Token (optional for WebSocket integration)"
-    type: "password"
-    default: ""
+  chip_tool_api_url:
+    description: "CHIP Tool API URL (e.g., http://192.168.6.166:6000)"
+    type: "str"
+    default: "http://homeassistant.local:6000"
   auto_backup:
     description: "Enable automatic database backup"
     type: "bool"
@@ -39,11 +39,10 @@ options:
     max: 168
 schema:
   log_level: "list(debug|info|warning|error)"
-  ha_token: "password?"
+  chip_tool_api_url: "str"
   auto_backup: "bool"
   backup_interval_hours: "int(1,168)"
 map:
   - config:rw
   - data:rw
   - backup:rw
-image: "ghcr.io/home-assistant/{arch}-addon-schnell-storage"
