@@ -31,7 +31,5 @@
   },
   "ports_description": {
     "8100/tcp": "Custom Data Storage API"
-  },
-  "webui": "http://[HOST]:8100"
+  }
 }
-
