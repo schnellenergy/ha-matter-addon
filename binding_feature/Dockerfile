@@ -1,5 +1,4 @@
-ARG BUILD_FROM
-FROM $BUILD_FROM
+FROM alpine:3.18
 
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -14,7 +13,8 @@ RUN apk add --no-cache \
     sqlite \
     sqlite-dev \
     curl \
-    jq
+    jq \
+    bash
 
 # Install Python dependencies
 RUN pip3 install --no-cache-dir \
@@ -48,15 +48,6 @@ EXPOSE 8080
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
-
-# Labels
-LABEL \
-    io.hass.name="Schnell Storage" \
-    io.hass.description="Custom data storage for Schnell Home Automation" \
-    io.hass.arch="${BUILD_ARCH}" \
-    io.hass.type="addon" \
-    io.hass.version="${BUILD_VERSION}" \
-    maintainer="Schnell Home Automation Team"
 
 # Start the application
 CMD ["/run.sh"]
