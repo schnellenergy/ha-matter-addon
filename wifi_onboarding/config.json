@@ -1,0 +1,80 @@
+{
+  "name": "SMASH Hub BLE WiFi Onboarding",
+  "version": "2.0.0",
+  "slug": "smash_ble_wifi_onboarding",
+  "description": "BLE-based WiFi onboarding for SMASH Home Hub",
+  "url": "https://github.com/schnell-home/smash-hub-onboarding",
+  "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
+  "startup": "before",
+  "boot": "auto",
+  "init": false,
+  "host_network": true,
+  "host_ipc": true,
+  "full_access": true,
+  "privileged": [
+    "NET_ADMIN",
+    "SYS_MODULE",
+    "SYS_RAWIO",
+    "SYS_ADMIN",
+    "NET_RAW"
+  ],
+  "devices": [
+    "/dev/gpiomem",
+    "/dev/gpiochip0",
+    "/dev/gpiochip1",
+    "/dev/gpiochip2",
+    "/dev/gpiochip3",
+    "/dev/gpiochip4",
+    "/dev/gpiochip10",
+    "/dev/gpiochip11",
+    "/dev/gpiochip12",
+    "/dev/gpiochip13",
+    "/dev/mem"
+  ],
+  "auto_uart": true,
+  "gpio": true,
+  "host_dbus": true,
+  "hassio_api": true,
+  "hassio_role": "admin",
+  "udev": true,
+  "environment": {
+    "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=/var/run/dbus/system_bus_socket"
+  },
+  "options": {
+    "gpio_pin": 17,
+    "hold_time": 5,
+    "enable_button": true,
+    "enable_led": true,
+    "led_red_pin": 22,
+    "led_green_pin": 23,
+    "led_blue_pin": 24,
+    "debug": false,
+    "connection_timeout": 60,
+    "use_static_ip": true,
+    "static_ip": "192.168.6.161",
+    "static_gateway": "192.168.6.1",
+    "static_dns": "8.8.8.8"
+  },
+  "schema": {
+    "gpio_pin": "int(1,40)",
+    "hold_time": "int(1,30)",
+    "enable_button": "bool",
+    "enable_led": "bool",
+    "led_red_pin": "int(1,40)",
+    "led_green_pin": "int(1,40)", 
+    "led_blue_pin": "int(1,40)",
+    "debug": "bool",
+    "connection_timeout": "int(10,300)",
+    "use_static_ip": "bool",
+    "static_ip": "str",
+    "static_gateway": "str",
+    "static_dns": "str"
+  },
+  "map": ["config:rw", "ssl"],
+  "ports": {
+    "8123/tcp": 8123
+  },
+  "ports_description": {
+    "8123/tcp": "Home Assistant web interface"
+  }
+}
