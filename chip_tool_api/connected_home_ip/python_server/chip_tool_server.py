@@ -18,12 +18,21 @@ logger = logging.getLogger(__name__)
 CHIP_TOOL_PATH = "/app/connected_home_ip/out/chip-tool-linux/chip-tool"
 
 
+def strip_ansi_codes(text: str) -> str:
+    """Remove ANSI color codes from text"""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
+
 class ChipToolOutputParser:
     """Parser for chip-tool output to extract meaningful information"""
     
     @staticmethod
     def parse_attribute_read(stdout: str) -> Dict[str, Any]:
         """Parse attribute read output from chip-tool"""
+        # Strip ANSI color codes first
+        stdout = strip_ansi_codes(stdout)
+        
         result = {
             "attributes": [],
             "success": False
@@ -32,7 +41,7 @@ class ChipToolOutputParser:
         current_attr = {}
         
         for line in stdout.split('\n'):
-            # Check for success indicators
+            # Check for TOO endpoint line to get metadata
             if '[TOO] Endpoint:' in line:
                 # Extract endpoint, cluster, attribute
                 match = re.search(r'Endpoint:\s+(\d+)\s+Cluster:\s+(0x[0-9A-F_]+)\s+Attribute\s+(0x[0-9A-F_]+)', line)
@@ -42,10 +51,15 @@ class ChipToolOutputParser:
                         'cluster': match.group(2).replace('_', ''),
                         'attribute': match.group(3).replace('_', '')
                     }
+                    
+                    # Also extract DataVersion if present
+                    data_version_match = re.search(r'DataVersion:\s+(\d+)', line)
+                    if data_version_match:
+                        current_attr['data_version'] = int(data_version_match.group(1))
             
-            # Parse DMG Data for actual values
-            elif '[DMG] Data =' in line:
-                # String values
+            # Parse DMG Data for actual values (this is the key line!)
+            elif '[DMG]' in line and 'Data =' in line:
+                # String values - handle tabs and spaces
                 string_match = re.search(r'\[DMG\]\s+Data\s+=\s+"([^"]+)"', line)
                 if string_match and current_attr:
                     current_attr['value'] = string_match.group(1)
@@ -79,6 +93,8 @@ class ChipToolOutputParser:
     @staticmethod
     def parse_commissioning(stdout: str) -> Dict[str, Any]:
         """Parse commissioning/pairing output"""
+        stdout = strip_ansi_codes(stdout)
+        
         result = {
             "success": False,
             "node_id": None,
@@ -109,6 +125,8 @@ class ChipToolOutputParser:
     @staticmethod
     def parse_command_response(stdout: str) -> Dict[str, Any]:
         """Parse command response (toggle, on, off, etc.)"""
+        stdout = strip_ansi_codes(stdout)
+        
         result = {
             "success": False,
             "endpoint": None,
@@ -117,21 +135,23 @@ class ChipToolOutputParser:
         }
         
         for line in stdout.split('\n'):
-            if '[DMG] Received Command Response Status' in line:
-                match = re.search(r'Endpoint=(\d+)\s+Cluster=(0x[0-9A-F_]+)\s+Command=(0x[0-9A-F_]+)\s+Status=(0x[0-9A-F]+)', line)
+            # Look for status report in DMG logs
+            if '[DMG]' in line and 'StatusIB' in line:
+                result['success'] = True
+            elif '[SC] Success status report received' in line:
+                result['success'] = True
+            elif '[TOO]' in line and 'Endpoint:' in line:
+                match = re.search(r'Endpoint:\s+(\d+)', line)
                 if match:
                     result['endpoint'] = int(match.group(1))
-                    result['cluster'] = match.group(2).replace('_', '')
-                    result['command'] = match.group(3).replace('_', '')
-                    status = match.group(4)
-                    result['success'] = status == '0x0'
-                    result['status_code'] = status
         
         return result
     
     @staticmethod
     def parse_binding(stdout: str) -> Dict[str, Any]:
         """Parse binding command output"""
+        stdout = strip_ansi_codes(stdout)
+        
         result = {
             "success": False,
             "message": ""
@@ -139,6 +159,10 @@ class ChipToolOutputParser:
         
         for line in stdout.split('\n'):
             if '[DMG] WriteClient' in line or '[DMG] WriteResponseMessage' in line:
+                result['success'] = True
+                result['message'] = "Binding write successful"
+                break
+            elif '[SC] Success status report received' in line:
                 result['success'] = True
                 result['message'] = "Binding write successful"
                 break
@@ -175,16 +199,20 @@ def run_chip_tool(args: List[str]) -> Dict[str, Any]:
             elif args[0] == 'accesscontrol':
                 parsed_data = ChipToolOutputParser.parse_binding(result.stdout)
 
+        # Strip ANSI codes from preview
+        clean_stdout = strip_ansi_codes(result.stdout)
+        clean_stderr = strip_ansi_codes(result.stderr)
+
         return {
             "success": result.returncode == 0,
             "command": " ".join(args),
             "returncode": result.returncode,
             "parsed": parsed_data,
             "raw_logs": {
-                "stdout_lines": len(result.stdout.split('\n')),
-                "stderr_lines": len(result.stderr.split('\n')),
-                "stdout_preview": result.stdout[:500] if result.stdout else "",
-                "stderr_preview": result.stderr[:500] if result.stderr else ""
+                "stdout_lines": len(clean_stdout.split('\n')),
+                "stderr_lines": len(clean_stderr.split('\n')),
+                "stdout_preview": clean_stdout[:500] if clean_stdout else "",
+                "stderr_preview": clean_stderr[:500] if clean_stderr else ""
             }
         }
     except subprocess.TimeoutExpired as e:
