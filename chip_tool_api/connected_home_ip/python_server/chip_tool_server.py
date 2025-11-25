@@ -35,10 +35,12 @@ class ChipToolOutputParser:
         
         result = {
             "attributes": [],
-            "success": False
+            "success": False,
+            "note": None
         }
         
         current_attr = {}
+        found_dmg_data = False
         
         for line in stdout.split('\n'):
             # Check for TOO endpoint line to get metadata
@@ -56,9 +58,23 @@ class ChipToolOutputParser:
                     data_version_match = re.search(r'DataVersion:\s+(\d+)', line)
                     if data_version_match:
                         current_attr['data_version'] = int(data_version_match.group(1))
+                    
+                    # Mark as successful read (even if we don't have the value)
+                    result['success'] = True
+            
+            # Check for "Don't know how to log" message
+            elif "[TOO]   Don't know how to log attribute value" in line:
+                if current_attr:
+                    current_attr['value'] = None
+                    current_attr['type'] = 'unknown'
+                    current_attr['note'] = "Value exists but chip-tool cannot display it (custom cluster). Enable DMG logging to see the actual value."
+                    result['attributes'].append(current_attr.copy())
+                    result['note'] = "DMG logging is not enabled in this chip-tool build. Attribute values for custom clusters cannot be displayed. To fix: rebuild chip-tool with CHIP_PROGRESS_LOGGING=1 or use a build with detailed DMG logging enabled."
+                    current_attr = {}
             
             # Parse DMG Data for actual values (this is the key line!)
             elif '[DMG]' in line and 'Data =' in line:
+                found_dmg_data = True
                 # String values - handle tabs and spaces
                 string_match = re.search(r'\[DMG\]\s+Data\s+=\s+"([^"]+)"', line)
                 if string_match and current_attr:
