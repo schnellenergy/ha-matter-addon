@@ -1,10 +1,12 @@
 # File: chip_tool_server.py
-# Fixed version with better error handling and logging
+# Enhanced version with clean JSON output and proper parsing
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import subprocess
 import logging
+import re
+from typing import Dict, List, Any, Optional
 
 app = Flask(__name__)
 CORS(app)  # Allow all origins
@@ -16,8 +18,136 @@ logger = logging.getLogger(__name__)
 CHIP_TOOL_PATH = "/app/connected_home_ip/out/chip-tool-linux/chip-tool"
 
 
-def run_chip_tool(args):
-    """Execute chip-tool command with proper error handling"""
+class ChipToolOutputParser:
+    """Parser for chip-tool output to extract meaningful information"""
+    
+    @staticmethod
+    def parse_attribute_read(stdout: str) -> Dict[str, Any]:
+        """Parse attribute read output from chip-tool"""
+        result = {
+            "attributes": [],
+            "success": False
+        }
+        
+        current_attr = {}
+        
+        for line in stdout.split('\n'):
+            # Check for success indicators
+            if '[TOO] Endpoint:' in line:
+                # Extract endpoint, cluster, attribute
+                match = re.search(r'Endpoint:\s+(\d+)\s+Cluster:\s+(0x[0-9A-F_]+)\s+Attribute\s+(0x[0-9A-F_]+)', line)
+                if match:
+                    current_attr = {
+                        'endpoint': int(match.group(1)),
+                        'cluster': match.group(2).replace('_', ''),
+                        'attribute': match.group(3).replace('_', '')
+                    }
+            
+            # Parse DMG Data for actual values
+            elif '[DMG] Data =' in line:
+                # String values
+                string_match = re.search(r'\[DMG\]\s+Data\s+=\s+"([^"]+)"', line)
+                if string_match and current_attr:
+                    current_attr['value'] = string_match.group(1)
+                    current_attr['type'] = 'string'
+                    result['attributes'].append(current_attr.copy())
+                    result['success'] = True
+                    current_attr = {}
+                    continue
+                
+                # Numeric values
+                num_match = re.search(r'\[DMG\]\s+Data\s+=\s+(\d+)', line)
+                if num_match and current_attr:
+                    current_attr['value'] = int(num_match.group(1))
+                    current_attr['type'] = 'integer'
+                    result['attributes'].append(current_attr.copy())
+                    result['success'] = True
+                    current_attr = {}
+                    continue
+                
+                # Boolean values
+                bool_match = re.search(r'\[DMG\]\s+Data\s+=\s+(true|false)', line, re.IGNORECASE)
+                if bool_match and current_attr:
+                    current_attr['value'] = bool_match.group(1).lower() == 'true'
+                    current_attr['type'] = 'boolean'
+                    result['attributes'].append(current_attr.copy())
+                    result['success'] = True
+                    current_attr = {}
+        
+        return result
+    
+    @staticmethod
+    def parse_commissioning(stdout: str) -> Dict[str, Any]:
+        """Parse commissioning/pairing output"""
+        result = {
+            "success": False,
+            "node_id": None,
+            "fabric_id": None,
+            "stages": []
+        }
+        
+        for line in stdout.split('\n'):
+            if '[TOO] Device commissioning completed with success' in line:
+                result['success'] = True
+            elif '[TOO] Pairing Success' in line:
+                result['success'] = True
+            elif 'Commissioning complete for node ID' in line:
+                match = re.search(r'node ID (0x[0-9A-Fa-f]+)', line)
+                if match:
+                    result['node_id'] = match.group(1)
+            elif 'Fabric ID is' in line:
+                match = re.search(r'Fabric ID is (0x[0-9A-Fa-f]+)', line)
+                if match:
+                    result['fabric_id'] = match.group(1)
+            elif 'Successfully finished commissioning step' in line:
+                match = re.search(r"step '([^']+)'", line)
+                if match:
+                    result['stages'].append(match.group(1))
+        
+        return result
+    
+    @staticmethod
+    def parse_command_response(stdout: str) -> Dict[str, Any]:
+        """Parse command response (toggle, on, off, etc.)"""
+        result = {
+            "success": False,
+            "endpoint": None,
+            "cluster": None,
+            "command": None
+        }
+        
+        for line in stdout.split('\n'):
+            if '[DMG] Received Command Response Status' in line:
+                match = re.search(r'Endpoint=(\d+)\s+Cluster=(0x[0-9A-F_]+)\s+Command=(0x[0-9A-F_]+)\s+Status=(0x[0-9A-F]+)', line)
+                if match:
+                    result['endpoint'] = int(match.group(1))
+                    result['cluster'] = match.group(2).replace('_', '')
+                    result['command'] = match.group(3).replace('_', '')
+                    status = match.group(4)
+                    result['success'] = status == '0x0'
+                    result['status_code'] = status
+        
+        return result
+    
+    @staticmethod
+    def parse_binding(stdout: str) -> Dict[str, Any]:
+        """Parse binding command output"""
+        result = {
+            "success": False,
+            "message": ""
+        }
+        
+        for line in stdout.split('\n'):
+            if '[DMG] WriteClient' in line or '[DMG] WriteResponseMessage' in line:
+                result['success'] = True
+                result['message'] = "Binding write successful"
+                break
+        
+        return result
+
+
+def run_chip_tool(args: List[str]) -> Dict[str, Any]:
+    """Execute chip-tool command with proper error handling and parsing"""
     cmd = [CHIP_TOOL_PATH] + args
     logger.info(f"Executing command: {' '.join(cmd)}")
 
@@ -30,29 +160,46 @@ def run_chip_tool(args):
         )
 
         logger.info(f"Command completed with return code: {result.returncode}")
-        logger.debug(f"STDOUT: {result.stdout}")
-        logger.debug(f"STDERR: {result.stderr}")
+
+        # Determine command type and parse accordingly
+        parsed_data = {}
+        if len(args) > 0:
+            if args[0] == 'pairing':
+                parsed_data = ChipToolOutputParser.parse_commissioning(result.stdout)
+            elif args[0] in ['onoff', 'levelcontrol', 'colorcontrol']:
+                parsed_data = ChipToolOutputParser.parse_command_response(result.stdout)
+            elif args[0] == 'any' and len(args) > 1 and args[1] == 'read-by-id':
+                parsed_data = ChipToolOutputParser.parse_attribute_read(result.stdout)
+            elif args[0] == 'binding':
+                parsed_data = ChipToolOutputParser.parse_binding(result.stdout)
+            elif args[0] == 'accesscontrol':
+                parsed_data = ChipToolOutputParser.parse_binding(result.stdout)
 
         return {
             "success": result.returncode == 0,
-            "command": " ".join(cmd),
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode
+            "command": " ".join(args),
+            "returncode": result.returncode,
+            "parsed": parsed_data,
+            "raw_logs": {
+                "stdout_lines": len(result.stdout.split('\n')),
+                "stderr_lines": len(result.stderr.split('\n')),
+                "stdout_preview": result.stdout[:500] if result.stdout else "",
+                "stderr_preview": result.stderr[:500] if result.stderr else ""
+            }
         }
     except subprocess.TimeoutExpired as e:
         logger.error(f"Command timed out: {e}")
         return {
             "success": False,
             "error": "Command timed out after 60 seconds",
-            "command": " ".join(cmd)
+            "command": " ".join(args)
         }
     except Exception as e:
         logger.error(f"Command failed with exception: {e}")
         return {
             "success": False,
             "error": str(e),
-            "command": " ".join(cmd)
+            "command": " ".join(args)
         }
 
 
