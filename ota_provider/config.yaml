@@ -1,0 +1,23 @@
+name: "Matter OTA Provider"
+version: "1.0.0"
+slug: "matter_ota_provider"
+description: "Matter OTA Provider for firmware updates to Matter devices"
+url: "https://github.com/schnellenergy/ha-matter-addon/tree/main/ota_provider"
+arch:
+  - amd64
+  - aarch64
+init: false
+host_network: true
+map:
+  - share:rw
+options:
+  discriminator: 3840
+  passcode: 20202021
+  port: 5580
+  ota_files_path: "/share/ota-files"
+schema:
+  discriminator: int
+  passcode: int
+  port: int
+  ota_files_path: str
+
