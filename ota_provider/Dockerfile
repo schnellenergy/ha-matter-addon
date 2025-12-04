@@ -1,17 +1,14 @@
-ARG BUILD_FROM
-FROM $BUILD_FROM
+FROM ubuntu:22.04
 
 # Install required dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     bash \
-    libstdc++ \
-    libgcc \
-    openssl \
-    libcrypto3 \
+    jq \
     libssl3 \
-    avahi-libs \
-    glib \
-    dbus-libs
+    libavahi-compat-libdnssd1 \
+    libglib2.0-0 \
+    libdbus-1-3 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Create directory for OTA files
 RUN mkdir -p /share/ota-files
@@ -24,6 +21,6 @@ RUN chmod +x /usr/local/bin/chip-ota-provider-app
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 
-# Set the entrypoint
-ENTRYPOINT ["/run.sh"]
+# Set the default command
+CMD ["/run.sh"]
 
