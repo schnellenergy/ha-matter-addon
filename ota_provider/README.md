@@ -2,11 +2,17 @@
 
 This Home Assistant add-on provides a Matter OTA (Over-The-Air) Provider for firmware updates to Matter devices.
 
+## About
+
+The Matter OTA Provider is built automatically during installation from the official ConnectedHomeIP repository. This ensures compatibility with your system architecture (ARM64/aarch64 for Raspberry Pi or amd64 for x86-64 systems).
+
+**⚠️ Important**: The first installation will take **15-30 minutes** as it builds the OTA provider binary from source. Subsequent starts will be much faster.
+
 ## Installation
 
-1. Copy the `ha-ota-provider-addon` folder to your Home Assistant `addons` directory
+1. Add the repository URL to your Home Assistant add-on store
 2. Refresh the Add-on Store
-3. Install the "Matter OTA Provider" add-on
+3. Install the "Matter OTA Provider" add-on (first install takes 15-30 minutes)
 4. Configure the add-on (see Configuration section)
 5. Start the add-on
 
