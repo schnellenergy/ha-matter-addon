@@ -1,8 +1,5 @@
 FROM alpine:3.18
 
-# Set shell
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
 # Install requirements for add-on
 RUN \
   apk add --no-cache \
@@ -13,6 +10,9 @@ RUN \
   tzdata \
   bash \
   jq
+
+# Set shell (after bash is installed)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Python 3 HTTP Server
 WORKDIR /app
