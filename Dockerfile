@@ -46,11 +46,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # PRODUCTION FIX: Install ALL Python packages at build time to avoid runtime downloads
-# Install core Python packages (BLE support and requests) - Use system D-Bus packages
+# Install core Python packages (BLE support, requests, and Firebase) - Use system D-Bus packages
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     requests \
     bleak \
-    asyncio-mqtt
+    asyncio-mqtt \
+    firebase-admin
 
 # PRODUCTION FIX: Build and install ALL GPIO libraries at build time
 RUN echo "=== PRODUCTION BUILD: Installing ALL GPIO libraries for Python 3.13 ===" && \
@@ -146,6 +147,7 @@ RUN mkdir -p /data /tmp /var/log /var/run/wpa_supplicant
 # Copy essential application files
 COPY button_monitor.py /button_monitor.py
 COPY improved_ble_service.py /improved_ble_service.py
+COPY firestore_helper.py /firestore_helper.py
 COPY ble_diagnostics.py /ble_diagnostics.py
 COPY led_controller.py /led_controller.py
 COPY gpio_test.py /gpio_test.py

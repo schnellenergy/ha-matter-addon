@@ -19,6 +19,42 @@ from typing import Dict, List, Optional
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+# Import Firestore helper for IP management
+try:
+    from firestore_helper import FirestoreHelper
+    FIRESTORE_AVAILABLE = True
+    logger.info('✅ Firestore helper imported successfully')
+except ImportError as e:
+    logger.warning(f'⚠️ Firestore helper not available: {e}')
+    FIRESTORE_AVAILABLE = False
+
+def get_mac_address():
+    """Get the MAC address of the Raspberry Pi's primary network interface"""
+    try:
+        # Try to get MAC from wlan0 first (WiFi interface)
+        result = subprocess.run(['cat', '/sys/class/net/wlan0/address'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            mac = result.stdout.strip().upper()
+            logger.info(f'📍 MAC Address (wlan0): {mac}')
+            return mac
+        
+        # Fallback to eth0/end0 (Ethernet interface)
+        for interface in ['eth0', 'end0']:
+            result = subprocess.run(['cat', f'/sys/class/net/{interface}/address'], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                mac = result.stdout.strip().upper()
+                logger.info(f'📍 MAC Address ({interface}): {mac}')
+                return mac
+        
+        logger.error('❌ Could not get MAC address from any interface')
+        return None
+    except Exception as e:
+        logger.error(f'❌ Error getting MAC address: {e}')
+        return None
+
+
 def set_led_status(status: str):
     """Helper function to control the LED by writing to a status file."""
     try:
@@ -1107,6 +1143,28 @@ network={{
                 "hub_url": f"http://{ip_address}:8123"
             }
             
+            # Get MAC address and save IP to Firestore
+            mac_address = get_mac_address()
+            if mac_address:
+                connection_result["mac_address"] = mac_address
+                logger.info(f"📍 Hub MAC Address: {mac_address}")
+                
+                # Save IP to Firestore
+                if FIRESTORE_AVAILABLE:
+                    try:
+                        firestore_helper = FirestoreHelper()
+                        success = firestore_helper.save_hub_ip(mac_address, ip_address)
+                        if success:
+                            logger.info(f"✅ IP saved to Firestore: smash_db/{mac_address}/home_ip = {ip_address}")
+                        else:
+                            logger.warning(f"⚠️ Failed to save IP to Firestore")
+                    except Exception as e:
+                        logger.error(f"❌ Error saving IP to Firestore: {e}")
+                else:
+                    logger.warning("⚠️ Firestore not available, IP not saved to database")
+            else:
+                logger.warning("⚠️ Could not get MAC address, IP not saved to Firestore")
+            
             # Add Ethernet information if available
             if has_ethernet and eth_ip:
                 connection_result.update({
@@ -1998,12 +2056,18 @@ if DBUS_AVAILABLE:
         def ReadValue(self, options):
             logger.info("ℹ️ Client requested device info")
             
+            # Get MAC address
+            mac_address = get_mac_address()
+            
             info = {
                 'device_name': self.service.wifi_controller.device_name if hasattr(self.service.wifi_controller, 'device_name') else 'SMASH-Hub',
                 'firmware_version': '1.0.0',
                 'hardware_version': 'RPi5',
-                'manufacturer': 'Schnell'
+                'manufacturer': 'Schnell',
+                'mac_address': mac_address if mac_address else 'UNKNOWN'
             }
+            
+            logger.info(f"📍 Sending device info with MAC: {mac_address}")
             
             response = json.dumps(info)
             return [dbus.Byte(c) for c in response.encode('utf-8')]
