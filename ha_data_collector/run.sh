@@ -33,12 +33,42 @@ export INCLUDE_ATTRIBUTES=$(bashio::config 'include_attributes')
 
 # Try to fetch IP from Custom Data Storage addon
 HA_IP_FROM_STORAGE=""
-STORAGE_ADDON_URL="http://172.30.32.1:8100"  # Custom Data Storage addon internal URL
 
 bashio::log.info "📦 Attempting to fetch HA IP from Custom Data Storage addon..."
 
-# Fetch hub_ip from Custom Data Storage addon
-STORAGE_RESPONSE=$(curl -s -m 5 "${STORAGE_ADDON_URL}/api/data/home_setup" 2>/dev/null || echo "")
+# Try multiple possible URLs for the Custom Data Storage addon
+STORAGE_URLS=(
+    "http://localhost:8100"
+    "http://127.0.0.1:8100"
+    "http://172.30.32.1:8100"
+    "http://homeassistant.local:8100"
+)
+
+# Retry logic with exponential backoff (max 30 seconds total)
+MAX_RETRIES=5
+RETRY_COUNT=0
+STORAGE_RESPONSE=""
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ -z "$STORAGE_RESPONSE" ]; do
+    if [ $RETRY_COUNT -gt 0 ]; then
+        WAIT_TIME=$((2 ** RETRY_COUNT))  # 2, 4, 8, 16 seconds
+        bashio::log.info "⏳ Waiting ${WAIT_TIME}s before retry ${RETRY_COUNT}/${MAX_RETRIES}..."
+        sleep $WAIT_TIME
+    fi
+    
+    for STORAGE_URL in "${STORAGE_URLS[@]}"; do
+        bashio::log.info "Trying: $STORAGE_URL"
+        STORAGE_RESPONSE=$(curl -s -m 3 "${STORAGE_URL}/api/data/home_setup" 2>/dev/null || echo "")
+        
+        if [ -n "$STORAGE_RESPONSE" ] && echo "$STORAGE_RESPONSE" | jq -e '.success' >/dev/null 2>&1; then
+            bashio::log.info "✅ Connected to Custom Data Storage at: $STORAGE_URL"
+            break 2  # Break out of both loops
+        fi
+        STORAGE_RESPONSE=""
+    done
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+done
 
 if [ -n "$STORAGE_RESPONSE" ]; then
     # Extract hub_ip from JSON response: data.structure.hub_ip
@@ -57,7 +87,8 @@ if [ -n "$STORAGE_RESPONSE" ]; then
         bashio::log.warning "⚠️ No hub_ip found in Custom Data Storage response"
     fi
 else
-    bashio::log.warning "⚠️ Could not connect to Custom Data Storage addon"
+    bashio::log.warning "⚠️ Could not connect to Custom Data Storage addon after ${MAX_RETRIES} retries"
+    bashio::log.warning "⚠️ Make sure the Custom Data Storage addon is installed and running"
 fi
 
 # Determine Home Assistant hostname/IP
