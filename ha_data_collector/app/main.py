@@ -105,6 +105,13 @@ class HomeAssistantDataCollector:
         """Send event data to Google Sheets"""
         try:
             headers = {'Content-Type': 'application/json'}
+            
+            # DEBUG: Log the exact data being sent
+            logger.info(f"📤 Sending to Google Sheets:")
+            logger.info(f"   Event ID: {event_data.get('event_id', 'unknown')}")
+            logger.info(f"   Total fields: {len(event_data)}")
+            logger.info(f"   Field names: {list(event_data.keys())}")
+            logger.info(f"   Full JSON payload: {json.dumps(event_data, indent=2)}")
 
             for attempt in range(self.retry_attempts):
                 try:
@@ -117,10 +124,10 @@ class HomeAssistantDataCollector:
 
                     if response.status_code == 200:
                         result = response.json()
-                        if result.get('status') == 'success':
+                        if result.get('status') == 'success' or result.get('success') == True:
                             self.stats['events_sent'] += 1
-                            logger.debug(
-                                f"Successfully sent event: {event_data.get('event_id', 'unknown')}")
+                            logger.info(
+                                f"✅ Successfully sent event: {event_data.get('event_id', 'unknown')}")
                             return True
                         else:
                             logger.error(f"Google Sheets API error: {result}")
