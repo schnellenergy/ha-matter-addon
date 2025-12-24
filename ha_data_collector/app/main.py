@@ -88,34 +88,18 @@ class HomeAssistantDataCollector:
 
     def get_auth_headers(self):
         """Get authentication headers for Home Assistant API calls"""
-        # When using Supervisor API (supervisor/core), use Supervisor token
-        # When using direct connection, use HA token
-        if 'supervisor' in self.ha_url:
-            # Addon is using Supervisor API - use Supervisor token
-            if self.supervisor_token:
-                logger.debug(f"🔐 Using Supervisor token for API auth")
-                return {
-                    'Authorization': f'Bearer {self.supervisor_token}',
-                    'Content-Type': 'application/json'
-                }
-            else:
-                logger.error("❌ No Supervisor token available for authentication")
-                return {
-                    'Content-Type': 'application/json'
-                }
+        # Always use HA token for direct connection authentication
+        if self.ha_token:
+            logger.debug(f"🔐 Using HA token for API auth")
+            return {
+                'Authorization': f'Bearer {self.ha_token}',
+                'Content-Type': 'application/json'
+            }
         else:
-            # Direct connection to HA - use HA token
-            if self.ha_token:
-                logger.debug(f"🔐 Using HA token for API auth")
-                return {
-                    'Authorization': f'Bearer {self.ha_token}',
-                    'Content-Type': 'application/json'
-                }
-            else:
-                logger.error("❌ No HA token available for authentication")
-                return {
-                    'Content-Type': 'application/json'
-                }
+            logger.error("❌ No HA token available for authentication")
+            return {
+                'Content-Type': 'application/json'
+            }
 
     async def send_to_google_sheets(self, event_data: Dict[str, Any]) -> bool:
         """Send event data to Google Sheets"""
