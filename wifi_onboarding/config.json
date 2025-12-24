@@ -1,10 +1,17 @@
 {
   "name": "SMASH Hub BLE WiFi Onboarding",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "slug": "smash_ble_wifi_onboarding",
-  "description": "BLE-based WiFi onboarding for SMASH Home Hub",
+  "description": "BLE-based WiFi onboarding for SMASH Home Hub with factory reset support",
+  "icon": "mdi:wifi-cog",
   "url": "https://github.com/schnell-home/smash-hub-onboarding",
-  "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
+  "arch": [
+    "armhf",
+    "armv7",
+    "aarch64",
+    "amd64",
+    "i386"
+  ],
   "startup": "before",
   "boot": "auto",
   "init": false,
@@ -50,9 +57,9 @@
     "led_blue_pin": 24,
     "debug": false,
     "connection_timeout": 60,
-    "use_static_ip": true,
-    "static_ip": "192.168.6.161",
-    "static_gateway": "192.168.6.1",
+    "use_static_ip": false,
+    "static_ip": "",
+    "static_gateway": "",
     "static_dns": "8.8.8.8"
   },
   "schema": {
@@ -61,7 +68,7 @@
     "enable_button": "bool",
     "enable_led": "bool",
     "led_red_pin": "int(1,40)",
-    "led_green_pin": "int(1,40)", 
+    "led_green_pin": "int(1,40)",
     "led_blue_pin": "int(1,40)",
     "debug": "bool",
     "connection_timeout": "int(10,300)",
@@ -70,7 +77,10 @@
     "static_gateway": "str",
     "static_dns": "str"
   },
-  "map": ["config:rw", "ssl"],
+  "map": [
+    "config:rw",
+    "ssl"
+  ],
   "ports": {
     "8123/tcp": 8123
   },

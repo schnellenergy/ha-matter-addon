@@ -391,37 +391,63 @@ class ButtonMonitor:
         except Exception:
             pass
         
-        # 1. Stop WiFi-related services only (preserve ethernet and button monitor)
-        logger.info("🛑 Stopping WiFi services only...")
-        wifi_services = [
-            "wpa_supplicant", "dhcpcd", "udhcpc"
-        ]
-        
-        for service in wifi_services:
-            try:
-                self.run_command(["pkill", "-9", "-f", service])
-                logger.debug(f"Stopped {service}")
-                time.sleep(0.2)
-            except Exception as e:
-                logger.debug(f"Failed to stop {service}: {str(e)}")
-        
-        # 2. Reset wlan0 interface only (preserve ethernet interfaces)
+        # 1. Delete IP from Firestore FIRST (while network is still available)
         try:
-            logger.info("🔄 Resetting wlan0 interface...")
-            self.run_command(["ip", "link", "set", "wlan0", "down"], timeout=10)
-            time.sleep(1)
-            self.run_command(["ip", "addr", "flush", "dev", "wlan0"], timeout=10)
-            time.sleep(1)
-            # Only flush wlan0 routes, not all routes
-            self.run_command(["sh", "-c", "ip route | grep wlan0 | while read route; do ip route del $route; done"], timeout=10)
-            time.sleep(1)
-            self.run_command(["ip", "link", "set", "wlan0", "up"], timeout=10)
-            time.sleep(2)
-            logger.info("✅ wlan0 interface reset (ethernet preserved)")
+            # Import here to avoid issues if Firestore not available
+            from firestore_helper import FirestoreHelper
+            
+            # Get MAC address
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from improved_ble_service import get_mac_address
+            
+            mac_address = get_mac_address()
+            if mac_address:
+                logger.info(f"🔄 Deleting IP from Firestore for MAC: {mac_address}")
+                firestore_helper = FirestoreHelper()
+                success = firestore_helper.delete_hub_ip(mac_address)
+                if success:
+                    logger.info(f"✅ IP deleted from Firestore - app will detect network reset")
+                else:
+                    logger.warning(f"⚠️ Failed to delete IP from Firestore")
+            else:
+                logger.warning("⚠️ Could not get MAC address, IP not deleted from Firestore")
         except Exception as e:
-            logger.warning(f"Failed to reset wlan0: {e}")
+            logger.warning(f"⚠️ Error deleting IP from Firestore: {e}")
+            logger.warning("   Network reset will continue, but app may not detect it immediately")
         
-        # 3. Remove WiFi configuration files only
+        # 2. CRITICAL FIX: Disconnect WiFi via Supervisor API (like HA UI "Reset Configuration")
+        logger.info("🔄 Disconnecting WiFi via Home Assistant Supervisor API...")
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from supervisor_api import SupervisorAPI
+            
+            supervisor = SupervisorAPI()
+            success = supervisor.disconnect_wifi()
+            
+            if success:
+                logger.info("✅ WiFi disconnected successfully via Supervisor API")
+                logger.info("🌐 Home Assistant will remove wlan0 configuration")
+                time.sleep(3)  # Give HA time to process the disconnect
+            else:
+                logger.warning("⚠️ Supervisor API disconnect failed, falling back to manual reset")
+                # Fallback to manual reset if API fails
+                logger.info("🔄 Fallback: Manual wlan0 reset...")
+                self.run_command(["ip", "link", "set", "wlan0", "down"], timeout=10)
+                time.sleep(1)
+                self.run_command(["ip", "addr", "flush", "dev", "wlan0"], timeout=10)
+                time.sleep(1)
+                self.run_command(["sh", "-c", "ip route | grep wlan0 | while read route; do ip route del $route; done"], timeout=10)
+                time.sleep(1)
+                self.run_command(["ip", "link", "set", "wlan0", "up"], timeout=10)
+                time.sleep(2)
+                logger.info("✅ wlan0 interface reset manually (fallback)")
+        except Exception as e:
+            logger.error(f"❌ Failed to disconnect WiFi: {e}")
+            logger.warning("⚠️ WiFi may not be fully reset")
+        
+        # 4. Remove WiFi configuration files only
         config_files = [
             self.config_file,
             self.state_file,
@@ -436,6 +462,7 @@ class ButtonMonitor:
                     logger.info(f"🗑️ Removed {file_path}")
             except Exception as e:
                 logger.error(f"Failed to remove {file_path}: {str(e)}")
+
 
         # 4. Create reset flag for main process
         try:
@@ -457,57 +484,10 @@ class ButtonMonitor:
         except Exception as e:
             logger.warning(f"Failed to signal main process: {e}")
 
-        # 6. Restart hotspot mode for wlan0 (keep ethernet untouched)
-        try:
-            logger.info("🏗️ Restarting hotspot mode on wlan0...")
-            
-            # Set up wlan0 for hotspot
-            self.run_command(["ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"])
-            time.sleep(1)
-            
-            # Create hostapd config
-            hostapd_config = """interface=wlan0
-driver=nl80211
-ssid=WiFi-Setup
-hw_mode=g
-channel=6
-auth_algs=1
-wpa=0
-"""
-            with open('/tmp/hostapd.conf', 'w') as f:
-                f.write(hostapd_config)
-            
-            # Stop any existing hostapd/dnsmasq and restart
-            self.run_command(["pkill", "-9", "hostapd"])
-            self.run_command(["pkill", "-9", "dnsmasq"])
-            time.sleep(2)
-            
-            # Start hostapd in background
-            subprocess.Popen(["hostapd", "/tmp/hostapd.conf"])  # nosec - executed in controlled environment
-            time.sleep(3)
-            
-            # Start dnsmasq
-            subprocess.Popen([
-                "dnsmasq",
-                "--interface=wlan0",
-                "--dhcp-range=192.168.4.10,192.168.4.50,12h",
-                "--dhcp-option=3,192.168.4.1",
-                "--dhcp-option=6,192.168.4.1",
-                "--server=8.8.8.8",
-                "--address=/#/192.168.4.1",
-                "--no-resolv",
-                "--no-hosts",
-                "--log-dhcp"
-            ])  # nosec - executed in controlled environment
-            time.sleep(2)
-            
-            logger.info("✅ Hotspot mode restored on wlan0")
-            
-        except Exception as e:
-            logger.warning(f"Failed to restart hotspot: {e}")
-
+        # 6. DO NOT set up hotspot - let BLE service handle fresh setup
+        # The BLE service will advertise and handle WiFi onboarding
         logger.info("🎉 WiFi reset complete - configuration cleared")
-        logger.info("📱 Connect to 'WiFi-Setup' to reconfigure")
+        logger.info("📱 Connect to 'SMASH-XXXX' via BLE to reconfigure")
         logger.info("🌐 Ethernet connections remain active and accessible")
 
     def monitor_button(self):
