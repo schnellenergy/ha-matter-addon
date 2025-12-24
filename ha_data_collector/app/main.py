@@ -305,12 +305,10 @@ class HomeAssistantDataCollector:
         event_id = f"evt_{timestamp_ms}_{event_hash}_{random_suffix}"
 
         # Base formatted data with expanded columns for dashboard analytics
-        # IMPORTANT: Order must match Google Apps Script columns exactly!
-        # Apps Script expects: Core Event Data (11 cols) -> Device Info (10 cols) -> 
-        # Operation Analytics (3 cols) -> Time Analytics (4 cols) -> Device State (8 cols) ->
-        # Button Analytics (3 cols) -> Automation (3 cols) -> attributes (1 col)
+        # IMPORTANT: Field order must match the working backup exactly!
+        # This order matches what Google Apps Script expects based on old working data
         formatted_data = {
-            # Core Event Data (columns 1-11)
+            # Core Event Data (columns 1-8)
             'event_id': event_id,
             'timestamp': event.get('time_fired', datetime.now(timezone.utc).isoformat()),
             'event_type': event_type,
@@ -319,34 +317,23 @@ class HomeAssistantDataCollector:
             'service': '',
             'old_state': '',
             'new_state': '',
+            
+            # Raw Data (column 9)
+            'attributes': '',
+            
+            # User Context (columns 10-11)
             'user_id': event.get('context', {}).get('user_id', ''),
             'source': 'home_assistant_logbook',
-            'created_at': datetime.now(timezone.utc).isoformat(),  # Added for Apps Script
             
-            # Device Information (columns 12-21)
-            'friendly_name': '',
-            'device_class': '',
-            'manufacturer': '',
-            'model': '',
-            'sw_version': '',
+            # Automation & Device (columns 12-15)
+            'automation_id': '',
             'device_id': '',
             'area_id': '',
-            'area_name': '',
-            'device_name': '',
             'platform': '',
             
-            # Operation Analytics (columns 22-24)
-            'operation_type': '',
-            'operation_category': '',
-            'interaction_type': '',
-            
-            # Time Analytics (columns 25-28)
-            'day_of_week': '',
-            'hour_of_day': '',
-            'is_weekend': '',
-            'time_period': '',
-            
-            # Device State & Controls (columns 29-36)
+            # Expanded columns for dashboard analytics (columns 16-43)
+            'friendly_name': '',
+            'device_class': '',
             'brightness': '',
             'color_temp': '',
             'rgb_color': '',
@@ -355,19 +342,23 @@ class HomeAssistantDataCollector:
             'humidity': '',
             'battery_level': '',
             'signal_strength': '',
-            
-            # Button & Event Analytics (columns 37-39)
             'event_subtype': '',
             'button_type': '',
             'press_count': '',
-            
-            # Automation & Scene (columns 40-42)
-            'automation_id': '',
             'automation_name': '',
             'scene_name': '',
-            
-            # Raw Data (column 43)
-            'attributes': ''
+            'area_name': '',
+            'device_name': '',
+            'manufacturer': '',
+            'model': '',
+            'sw_version': '',
+            'operation_type': '',  # on, off, toggle, dim, brighten, etc.
+            'operation_category': '',  # lighting, climate, security, etc.
+            'interaction_type': '',  # manual, automation, schedule, etc.
+            'day_of_week': '',
+            'hour_of_day': '',
+            'is_weekend': '',
+            'time_period': ''  # morning, afternoon, evening, night
         }
 
         # Handle logbook entries specially
