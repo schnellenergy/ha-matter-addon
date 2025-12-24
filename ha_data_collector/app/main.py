@@ -305,6 +305,7 @@ class HomeAssistantDataCollector:
         event_id = f"evt_{timestamp_ms}_{event_hash}_{random_suffix}"
 
         # Base formatted data with expanded columns for dashboard analytics
+        # IMPORTANT: Order must match Google Sheets columns exactly!
         formatted_data = {
             'event_id': event_id,
             'timestamp': event.get('time_fired', datetime.now(timezone.utc).isoformat()),
@@ -314,16 +315,23 @@ class HomeAssistantDataCollector:
             'service': '',
             'old_state': '',
             'new_state': '',
-            'attributes': '',
             'user_id': event.get('context', {}).get('user_id', ''),
             'source': 'home_assistant_logbook',
-            'automation_id': '',
-            'device_id': '',
-            'area_id': '',
-            'platform': '',
-            # Expanded columns for dashboard analytics
             'friendly_name': '',
             'device_class': '',
+            # Columns after P (16) - these were missing!
+            'device_id': '',
+            'area_id': '',
+            'area_name': '',
+            'device_name': '',
+            'platform': '',
+            'operation_type': '',  # on, off, toggle, dim, brighten, etc.
+            'operation_category': '',  # lighting, climate, security, etc.
+            'interaction_type': '',  # manual, automation, schedule, etc.
+            'day_of_week': '',
+            'hour_of_day': '',
+            'is_weekend': '',
+            'time_period': '',  # morning, afternoon, evening, night
             'brightness': '',
             'color_temp': '',
             'rgb_color': '',
@@ -335,20 +343,13 @@ class HomeAssistantDataCollector:
             'event_subtype': '',
             'button_type': '',
             'press_count': '',
+            'automation_id': '',
             'automation_name': '',
             'scene_name': '',
-            'area_name': '',
-            'device_name': '',
             'manufacturer': '',
             'model': '',
             'sw_version': '',
-            'operation_type': '',  # on, off, toggle, dim, brighten, etc.
-            'operation_category': '',  # lighting, climate, security, etc.
-            'interaction_type': '',  # manual, automation, schedule, etc.
-            'day_of_week': '',
-            'hour_of_day': '',
-            'is_weekend': '',
-            'time_period': ''  # morning, afternoon, evening, night
+            'attributes': ''
         }
 
         # Handle logbook entries specially
