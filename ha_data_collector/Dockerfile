@@ -13,7 +13,8 @@ RUN \
   py3-wheel \
   tzdata \
   bash \
-  jq
+  jq \
+  curl
 
 # Python 3 HTTP Server
 WORKDIR /app
