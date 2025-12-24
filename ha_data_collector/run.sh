@@ -31,51 +31,27 @@ export EXCLUDED_DOMAINS=$(bashio::config 'excluded_domains' | jq -r '.[]' | tr '
 export EXCLUDED_ENTITIES=$(bashio::config 'excluded_entities' | jq -r '.[]' | tr '\n' ',' | sed 's/,$//')
 export INCLUDE_ATTRIBUTES=$(bashio::config 'include_attributes')
 
-# Determine Home Assistant IP address
-# If user provided manual IP, use that. Otherwise auto-detect.
-if [ -n "$HA_IP_MANUAL" ] && [ "$HA_IP_MANUAL" != "null" ]; then
-    HA_IP="$HA_IP_MANUAL"
-    bashio::log.info "Using manually configured IP: ${HA_IP}"
+# Determine Home Assistant hostname/IP
+# Priority: 1) Manual IP (if set), 2) homeassistant.local (standard), 3) localhost
+if [ -n "$HA_IP_MANUAL" ] && [ "$HA_IP_MANUAL" != "null" ] && [ "$HA_IP_MANUAL" != "" ]; then
+    HA_HOST="$HA_IP_MANUAL"
+    bashio::log.info "Using manually configured IP: ${HA_HOST}"
 else
-    bashio::log.info "Auto-detecting Home Assistant IP..."
-    
-    # Auto-detect Home Assistant IP address
-    # Try multiple methods to get the HA IP
-    HA_IP=""
-
-    # Method 1: Try to get from supervisor API
-    if command -v bashio::api.supervisor >/dev/null 2>&1; then
-        HA_IP=$(bashio::api.supervisor GET /core/info 2>/dev/null | jq -r '.data.ip_address // empty' 2>/dev/null || echo "")
-    fi
-
-    # Method 2: If that fails, try to get from network info
-    if [ -z "$HA_IP" ]; then
-        HA_IP=$(bashio::network.ipv4_address 2>/dev/null | awk '{print $1}' || echo "")
-    fi
-
-    # Method 3: If still empty, try hostname resolution
-    if [ -z "$HA_IP" ]; then
-        HA_IP=$(getent hosts homeassistant.local 2>/dev/null | awk '{print $1}' || echo "")
-    fi
-
-    # Method 4: Last resort - use gateway IP (usually the HA server)
-    if [ -z "$HA_IP" ]; then
-        HA_IP=$(ip route | grep default | awk '{print $3}' || echo "192.168.1.1")
-    fi
-    
-    bashio::log.info "Auto-detected IP: ${HA_IP}"
+    # Use homeassistant.local - this is the standard hostname that works even when IP changes
+    HA_HOST="homeassistant.local"
+    bashio::log.info "Using standard hostname: ${HA_HOST}"
 fi
 
-# Construct Home Assistant URL with detected/configured IP and configured port
-export HA_URL="http://${HA_IP}:${HA_PORT}"
-export HA_WEBSOCKET_URL="ws://${HA_IP}:${HA_PORT}/api/websocket"
+# Construct Home Assistant URL with hostname and configured port
+export HA_URL="http://${HA_HOST}:${HA_PORT}"
+export HA_WEBSOCKET_URL="ws://${HA_HOST}:${HA_PORT}/api/websocket"
 
 bashio::log.info "Configuration loaded successfully"
 bashio::log.info "Google Sheets URL: ${GOOGLE_SHEETS_URL}"
 bashio::log.info "Collect Historical: ${COLLECT_HISTORICAL}"
 bashio::log.info "Batch Size: ${BATCH_SIZE}"
 bashio::log.info "Log Level: ${LOG_LEVEL}"
-bashio::log.info "Detected Home Assistant IP: ${HA_IP}"
+bashio::log.info "Home Assistant Host: ${HA_HOST}"
 bashio::log.info "Home Assistant Port: ${HA_PORT}"
 bashio::log.info "Home Assistant URL: ${HA_URL}"
 
