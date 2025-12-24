@@ -34,6 +34,9 @@ RUN chmod a+x /run.sh
 # Create templates directory
 RUN mkdir -p /app/templates
 
+# Copy Firebase service account (if exists)
+COPY firebase-service-account.json /firebase-service-account.json 2>/dev/null || echo "No Firebase service account found - IP auto-fetch disabled"
+
 # Labels
 LABEL \
   io.hass.name="Home Assistant Data Collector" \

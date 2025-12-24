@@ -31,9 +31,57 @@ export EXCLUDED_DOMAINS=$(bashio::config 'excluded_domains' | jq -r '.[]' | tr '
 export EXCLUDED_ENTITIES=$(bashio::config 'excluded_entities' | jq -r '.[]' | tr '\n' ',' | sed 's/,$//')
 export INCLUDE_ATTRIBUTES=$(bashio::config 'include_attributes')
 
+# Try to fetch IP from Firebase Firestore if service account exists
+HA_IP_FROM_FIREBASE=""
+if [ -f "/firebase-service-account.json" ]; then
+    bashio::log.info "🔥 Firebase service account found - attempting to fetch HA IP from Firestore..."
+    
+    # Get MAC address of the hub
+    MAC_ADDRESS=$(cat /sys/class/net/eth0/address 2>/dev/null | tr '[:lower:]' '[:upper:]' | tr -d ':')
+    
+    if [ -z "$MAC_ADDRESS" ]; then
+        # Try wlan0 if eth0 doesn't exist
+        MAC_ADDRESS=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr '[:lower:]' '[:upper:]' | tr -d ':')
+    fi
+    
+    if [ -n "$MAC_ADDRESS" ]; then
+        # Format MAC address with colons (2C:CF:67:6E:11:52)
+        MAC_WITH_COLONS=$(echo "$MAC_ADDRESS" | sed 's/../&:/g' | sed 's/:$//')
+        bashio::log.info "📍 Hub MAC Address: $MAC_WITH_COLONS"
+        
+        # Fetch IP from Firebase using Python
+        HA_IP_FROM_FIREBASE=$(python3 -c "
+import sys
+sys.path.insert(0, '/app')
+from firestore_helper import FirestoreHelper
+
+try:
+    firestore = FirestoreHelper()
+    ip = firestore.get_hub_ip('$MAC_WITH_COLONS')
+    if ip:
+        print(ip)
+except Exception as e:
+    print('', file=sys.stderr)
+" 2>/dev/null)
+        
+        if [ -n "$HA_IP_FROM_FIREBASE" ]; then
+            bashio::log.info "✅ Successfully fetched HA IP from Firebase: $HA_IP_FROM_FIREBASE"
+        else
+            bashio::log.warning "⚠️ Could not fetch IP from Firebase - will use fallback methods"
+        fi
+    else
+        bashio::log.warning "⚠️ Could not determine MAC address - skipping Firebase IP fetch"
+    fi
+else
+    bashio::log.info "ℹ️ No Firebase service account found - skipping Firestore IP fetch"
+fi
+
 # Determine Home Assistant hostname/IP
-# Priority: 1) Manual IP (if set), 2) homeassistant.local (standard), 3) localhost
-if [ -n "$HA_IP_MANUAL" ] && [ "$HA_IP_MANUAL" != "null" ] && [ "$HA_IP_MANUAL" != "" ]; then
+# Priority: 1) Firebase IP, 2) Manual IP (if set), 3) homeassistant.local (standard)
+if [ -n "$HA_IP_FROM_FIREBASE" ]; then
+    HA_HOST="$HA_IP_FROM_FIREBASE"
+    bashio::log.info "🔥 Using IP from Firebase Firestore: ${HA_HOST}"
+elif [ -n "$HA_IP_MANUAL" ] && [ "$HA_IP_MANUAL" != "null" ] && [ "$HA_IP_MANUAL" != "" ]; then
     HA_HOST="$HA_IP_MANUAL"
     bashio::log.info "Using manually configured IP: ${HA_HOST}"
 else
