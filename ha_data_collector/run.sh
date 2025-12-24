@@ -29,11 +29,17 @@ export EXCLUDED_DOMAINS=$(bashio::config 'excluded_domains' | jq -r '.[]' | tr '
 export EXCLUDED_ENTITIES=$(bashio::config 'excluded_entities' | jq -r '.[]' | tr '\n' ',' | sed 's/,$//')
 export INCLUDE_ATTRIBUTES=$(bashio::config 'include_attributes')
 
+# Get Home Assistant URL from Supervisor
+# This allows the addon to automatically connect to the HA instance it's running on
+export HA_URL="http://supervisor/core"
+export HA_WEBSOCKET_URL="ws://supervisor/core/websocket"
+
 bashio::log.info "Configuration loaded successfully"
 bashio::log.info "Google Sheets URL: ${GOOGLE_SHEETS_URL}"
 bashio::log.info "Collect Historical: ${COLLECT_HISTORICAL}"
 bashio::log.info "Batch Size: ${BATCH_SIZE}"
 bashio::log.info "Log Level: ${LOG_LEVEL}"
+bashio::log.info "Home Assistant URL: ${HA_URL}"
 
 # Start the Python application
 cd /app

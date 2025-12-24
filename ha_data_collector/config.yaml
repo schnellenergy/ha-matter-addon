@@ -38,3 +38,4 @@ ports:
   8099/tcp: 8099
 ports_description:
   8099/tcp: "Web UI for monitoring data collection"
+webui: "http://[HOST]:[PORT:8099]"

@@ -1,4 +1,5 @@
-FROM alpine:3.18
+ARG BUILD_FROM
+FROM $BUILD_FROM
 
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -32,5 +33,13 @@ RUN chmod a+x /run.sh
 
 # Create templates directory
 RUN mkdir -p /app/templates
+
+# Labels
+LABEL \
+  io.hass.name="Home Assistant Data Collector" \
+  io.hass.description="Collects HA events and sends to Google Sheets" \
+  io.hass.arch="armhf|aarch64|i386|amd64|armv7" \
+  io.hass.type="addon" \
+  io.hass.version="1.0.0"
 
 CMD [ "/run.sh" ]
