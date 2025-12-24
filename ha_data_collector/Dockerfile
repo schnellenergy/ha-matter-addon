@@ -34,8 +34,8 @@ RUN chmod a+x /run.sh
 # Create templates directory
 RUN mkdir -p /app/templates
 
-# Copy Firebase service account (if exists)
-COPY firebase-service-account.json /firebase-service-account.json 2>/dev/null || echo "No Firebase service account found - IP auto-fetch disabled"
+# Copy Firebase service account (replace placeholder with real file to enable Firebase IP fetch)
+COPY firebase-service-account.json /firebase-service-account.json
 
 # Labels
 LABEL \
