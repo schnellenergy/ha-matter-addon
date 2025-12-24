@@ -46,11 +46,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # PRODUCTION FIX: Install ALL Python packages at build time to avoid runtime downloads
-# Install core Python packages (BLE support and requests) - Use system D-Bus packages
+# Install core Python packages (BLE support, requests, and Firebase) - Use system D-Bus packages
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     requests \
     bleak \
-    asyncio-mqtt
+    asyncio-mqtt \
+    firebase-admin
 
 # PRODUCTION FIX: Build and install ALL GPIO libraries at build time
 RUN echo "=== PRODUCTION BUILD: Installing ALL GPIO libraries for Python 3.13 ===" && \
@@ -67,28 +68,28 @@ RUN echo "=== PRODUCTION BUILD: Installing ALL GPIO libraries for Python 3.13 ==
     echo "✅ lgpio system library installed" && \
     # Install ALL GPIO Python packages with compilation for Python 3.13
     python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir --compile \
-        gpiozero \
-        rpi-lgpio \
-        RPi.GPIO && \
+    gpiozero \
+    rpi-lgpio \
+    RPi.GPIO && \
     # Install lgpio Python binding with proper linking - MULTIPLE ATTEMPTS for production reliability
     echo "Installing lgpio Python binding for Python 3.13..." && \
     (CFLAGS="-I/usr/local/include" LDFLAGS="-L/usr/local/lib -llgpio" \
-     python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir --no-binary=lgpio --compile lgpio || \
-     echo "First lgpio install attempt failed, trying alternative...") && \
+    python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir --no-binary=lgpio --compile lgpio || \
+    echo "First lgpio install attempt failed, trying alternative...") && \
     # Second attempt with direct source build
     (cd lg-master && cd py_lgpio && python3 setup.py build_ext --inplace && python3 setup.py install --force || \
-     echo "Second lgpio install attempt failed, trying third method...") && \
+    echo "Second lgpio install attempt failed, trying third method...") && \
     # Third attempt: Force install from wheel if available
     (python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir lgpio || \
-     echo "Third lgpio install attempt failed") && \
+    echo "Third lgpio install attempt failed") && \
     # PRODUCTION VERIFICATION: Ensure at least one GPIO library works
     echo "=== PRODUCTION VERIFICATION: Testing GPIO imports ===" && \
     (python3 -c "import lgpio; print('✅ lgpio build verification PASSED')" || \
-     echo "❌ lgpio build verification failed - runtime will use fallback") && \
+    echo "❌ lgpio build verification failed - runtime will use fallback") && \
     (python3 -c "import gpiozero; print('✅ gpiozero build verification PASSED')" || \
-     echo "❌ gpiozero build verification failed") && \
+    echo "❌ gpiozero build verification failed") && \
     (python3 -c "import RPi.GPIO; print('✅ RPi.GPIO build verification PASSED')" || \
-     echo "❌ RPi.GPIO build verification failed") && \
+    echo "❌ RPi.GPIO build verification failed") && \
     # Clean up build files but keep essential libraries
     rm -rf /tmp/lg-master /tmp/master.zip && \
     echo "✅ PRODUCTION GPIO BUILD COMPLETE"
@@ -146,14 +147,12 @@ RUN mkdir -p /data /tmp /var/log /var/run/wpa_supplicant
 # Copy essential application files
 COPY button_monitor.py /button_monitor.py
 COPY improved_ble_service.py /improved_ble_service.py
-COPY ble_diagnostics.py /ble_diagnostics.py
+COPY supervisor_api.py /supervisor_api.py
+COPY firestore_helper.py /firestore_helper.py
+COPY firebase-service-account.json /firebase-service-account.json
 COPY led_controller.py /led_controller.py
-COPY gpio_test.py /gpio_test.py
-COPY device_diagnostics.py /device_diagnostics.py
-COPY gpio_setup.sh /gpio_setup.sh
-COPY simple_gpio_test.py /simple_gpio_test.py
-COPY permission_test.py /permission_test.py
 COPY gpio_cleanup.py /gpio_cleanup.py
+COPY device_diagnostics.py /device_diagnostics.py
 COPY run.sh /run.sh
 
 # Create D-Bus configuration for BLE
@@ -171,7 +170,7 @@ RUN mkdir -p /etc/dbus-1/system.d && \
     echo '</busconfig>' >> /etc/dbus-1/system.d/bluetooth-addon.conf
 
 # Make scripts executable
-RUN chmod +x /run.sh /button_monitor.py /improved_ble_service.py /ble_diagnostics.py /led_controller.py /gpio_test.py /gpio_setup.sh /simple_gpio_test.py /permission_test.py /gpio_cleanup.py
+RUN chmod +x /run.sh /button_monitor.py /improved_ble_service.py /led_controller.py /gpio_cleanup.py /device_diagnostics.py
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

@@ -19,6 +19,70 @@ from typing import Dict, List, Optional
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+# Import Firestore helper for IP management
+try:
+    from firestore_helper import FirestoreHelper
+    FIRESTORE_AVAILABLE = True
+    logger.info('✅ Firestore helper imported successfully')
+except ImportError as e:
+    logger.warning(f'⚠️ Firestore helper not available: {e}')
+    FIRESTORE_AVAILABLE = False
+
+# Try to import D-Bus libraries with error handling
+try:
+    # First try system packages
+    sys.path.insert(0, '/usr/lib/python3/dist-packages')
+    sys.path.insert(0, '/usr/lib/python3.11/dist-packages')
+    
+    import dbus
+    import dbus.exceptions
+    import dbus.mainloop.glib
+    import dbus.service
+    from gi.repository import GLib
+    DBUS_AVAILABLE = True
+    logger.info("✅ D-Bus libraries loaded successfully (system packages)")
+except ImportError as e1:
+    logger.warning(f"⚠️ System D-Bus packages failed: {e1}")
+    try:
+        # Fallback to pip packages
+        import dbus
+        import dbus.exceptions  
+        import dbus.mainloop.glib
+        import dbus.service
+        from gi.repository import GLib
+        DBUS_AVAILABLE = True
+        logger.info("✅ D-Bus libraries loaded successfully (pip packages)")
+    except ImportError as e2:
+        logger.error(f"❌ Failed to import D-Bus libraries (system: {e1}, pip: {e2})")
+        DBUS_AVAILABLE = False
+
+def get_mac_address():
+    """Get the MAC address of the Raspberry Pi's primary network interface"""
+    try:
+        # Try to get MAC from wlan0 first (WiFi interface)
+        result = subprocess.run(['cat', '/sys/class/net/wlan0/address'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            mac = result.stdout.strip().upper()
+            logger.info(f'📍 MAC Address (wlan0): {mac}')
+            return mac
+        
+        # Fallback to eth0/end0 (Ethernet interface)
+        for interface in ['eth0', 'end0']:
+            result = subprocess.run(['cat', f'/sys/class/net/{interface}/address'], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                mac = result.stdout.strip().upper()
+                logger.info(f'📍 MAC Address ({interface}): {mac}')
+                return mac
+        
+        logger.error('❌ Could not get MAC address from any interface')
+        return None
+    except Exception as e:
+        logger.error(f'❌ Error getting MAC address: {e}')
+        return None
+
+
 def set_led_status(status: str):
     """Helper function to control the LED by writing to a status file."""
     try:
@@ -285,122 +349,93 @@ def _setup_basic_ethernet_access(eth_status):
 
 def update_network_led_status():
     """
-    SIMPLIFIED LED status based on network connection only (NO internet detection)
+    Update LED status based on network connection using HA Supervisor API
     Priority: Ethernet > WiFi > No connection (blinking red)
-
-    LED Behavior Rules:
-    - Ethernet connected: Solid GREEN (highest priority)
-    - WiFi connected (no Ethernet): Solid BLUE
-    - No network connection: Blinking RED (ready for WiFi setup via BLE)
     """
     try:
-        # Rate limiting for network status updates (INSTANT transitions)
+        # Rate limiting for instant transitions
         import time
         current_time = time.time()
         if hasattr(update_network_led_status, 'last_call_time'):
-            if current_time - update_network_led_status.last_call_time < 0.05:  # 0.05 second for INSTANT response
-                logger.debug("🚥 Network LED update rate limited (< 0.05s since last call)")
+            if current_time - update_network_led_status.last_call_time < 0.05:
+                logger.debug("🚥 Network LED update rate limited (<0.05s since last call)")
                 return
         update_network_led_status.last_call_time = current_time
         
-        # Check Ethernet status - SIMPLE connection detection only
-        eth_connected = False
-
-        for interface in ['eth0', 'end0']:
-            try:
-                eth_check = subprocess.run(['ip', 'addr', 'show', interface], capture_output=True, text=True)
-                if eth_check.returncode == 0 and 'inet ' in eth_check.stdout:
-                    eth_connected = True
-                    logger.debug(f"🔍 Ethernet {interface} connected with IP")
-                    break
-            except Exception:
-                continue
-        
-        # Check WiFi status - SIMPLE connection detection only
-        wifi_connected = False
-
+        # Import Supervisor API helper
         try:
-            wifi_check = subprocess.run(['ip', 'addr', 'show', 'wlan0'], capture_output=True, text=True)
-            if wifi_check.returncode == 0 and 'inet ' in wifi_check.stdout:
-                # Additional check: Ensure WiFi is actually connected to a network
-                wifi_status = subprocess.run(['iwconfig', 'wlan0'], capture_output=True, text=True)
-                if 'ESSID:' in wifi_status.stdout and 'ESSID:off' not in wifi_status.stdout:
-                    wifi_connected = True
-                    logger.debug(f"🔍 WiFi wlan0 connected to network with IP")
-                else:
-                    logger.debug(f"🔍 WiFi wlan0 has IP but not connected to network (ESSID:off)")
-            else:
-                logger.debug(f"🔍 WiFi wlan0 interface: no IP address")
-        except Exception as e:
-            logger.debug(f"🔍 WiFi check exception: {e}")
+            from supervisor_api import SupervisorAPI
+        except ImportError:
+            logger.error("❌ supervisor_api module not found for LED status")
+            set_led_status('error')
+            return
         
-        # Log current network state - SIMPLIFIED
-        logger.info(f"🔍 Network status check: Ethernet={eth_connected}, WiFi={wifi_connected}")
-
-        # SIMPLIFIED LED status based on connection only (NO internet detection)
+        # Initialize Supervisor API
+        supervisor = SupervisorAPI()
+        
+        # Get network info from Supervisor
+        network_info = supervisor.get_network_info()
+        
+        if not network_info:
+            logger.warning("⚠️ Could not get network info from Supervisor")
+            set_led_status('booting')
+            return
+        
+        # Parse interfaces array from Supervisor API response
+        interfaces = network_info.get('data', {}).get('interfaces', [])
+        if not interfaces:
+            # Try alternate format
+            interfaces = network_info.get('interfaces', [])
+        
+        # Check Ethernet status (eth0 or end0)
+        eth_connected = False
+        for interface in interfaces:
+            if interface.get('interface') in ['eth0', 'end0']:
+                if interface.get('connected'):
+                    eth_connected = True
+                    logger.debug(f"🔍 Ethernet {interface.get('interface')} connected via Supervisor")
+                    break
+        
+        # Check WiFi status (wlan0)
+        wifi_connected = False
+        for interface in interfaces:
+            if interface.get('interface') == 'wlan0':
+                if interface.get('connected'):
+                    wifi_connected = True
+                    logger.debug(f"🔍 WiFi wlan0 connected via Supervisor")
+                    break
+        
+        # Log current network state
+        logger.info(f"🔍 Network status via HA Supervisor: Ethernet={eth_connected}, WiFi={wifi_connected}")
+        
+        # Set LED based on connection priority
         if eth_connected:
-            # Ethernet connected - ALWAYS solid green (highest priority)
             set_led_status('ethernet_connected')  # Solid green
             logger.info("🚥 LED: Solid GREEN (Ethernet connected)")
         elif wifi_connected:
-            # WiFi connected, no Ethernet - ALWAYS solid blue
             set_led_status('wifi_connected')  # Solid blue
-            logger.info("🚥 LED: Solid BLUE (WiFi connected, no Ethernet)")
+            logger.info("🚥 LED: Solid BLUE (WiFi connected)")
         else:
-            # No network connection - check if we're in auto-reconnection mode
+            # No network connection - check auto-reconnect mode
             auto_reconnect = os.getenv('WIFI_AUTO_RECONNECT', 'false').lower() == 'true'
-
+            
             if auto_reconnect:
-                # During auto-reconnection, don't override the wifi_connecting status
-                # Only set to booting if we're not currently trying to reconnect
                 try:
                     with open("/tmp/led_status", 'r') as f:
                         current_status = f.read().strip()
-
+                    
                     if current_status == 'wifi_connecting':
-                        # Don't override - let the reconnection process manage the LED
-                        logger.debug("🚥 LED: Maintaining SOLID RED (Wi-Fi reconnection in progress)")
+                        logger.debug("🚥 LED: Maintaining SOLID RED (WiFi reconnection in progress)")
                         return
                 except:
                     pass
-
-            # No network connection - blinking red (ready for WiFi setup)
-            set_led_status('booting')  # Blinking red - no network, ready for setup
-            logger.info("🚥 LED: Blinking RED (No network - ready for WiFi setup via BLE)")
+            
+            set_led_status('booting')  # Blinking red
+            logger.info("🚥 LED: Blinking RED (No network - ready for WiFi setup)")
             
     except Exception as e:
-        logger.error(f"Error updating LED status: {e}")
-        # Default to blinking red if there's an error
-        set_led_status('booting')  # Blinking red
-
-# Try to import D-Bus libraries with error handling
-try:
-    # First try system packages
-    import sys
-    sys.path.insert(0, '/usr/lib/python3/dist-packages')
-    sys.path.insert(0, '/usr/lib/python3.11/dist-packages')
-    
-    import dbus
-    import dbus.exceptions
-    import dbus.mainloop.glib
-    import dbus.service
-    from gi.repository import GLib
-    DBUS_AVAILABLE = True
-    logger.info("✅ D-Bus libraries loaded successfully (system packages)")
-except ImportError as e1:
-    logger.warning(f"⚠️ System D-Bus packages failed: {e1}")
-    try:
-        # Fallback to pip packages
-        import dbus
-        import dbus.exceptions  
-        import dbus.mainloop.glib
-        import dbus.service
-        from gi.repository import GLib
-        DBUS_AVAILABLE = True
-        logger.info("✅ D-Bus libraries loaded successfully (pip packages)")
-    except ImportError as e2:
-        logger.error(f"❌ Failed to import D-Bus libraries (system: {e1}, pip: {e2})")
-        DBUS_AVAILABLE = False
+        logger.error(f"Error updating LED status via Supervisor API: {e}")
+        set_led_status('booting')  # Default to blinking red
 
 class WiFiController:
     """Enhanced WiFi controller with proper network management and LED status integration"""
@@ -416,7 +451,7 @@ class WiFiController:
             subprocess.run(["ip", "link", "set", "wlan0", "up"], capture_output=True)
             time.sleep(2)
             
-            # Scan for networks
+            # Scan for networks using iwlist (direct scan from Pi's WiFi interface)
             result = subprocess.run(["iwlist", "wlan0", "scan"], capture_output=True, text=True)
             networks = []
             
@@ -755,390 +790,128 @@ class WiFiController:
         return True
 
     def connect_to_network(self, ssid: str, password: str) -> Dict[str, str]:
-        """Connect to a WiFi network with improved error handling and LED status updates"""
+        """Connect to a WiFi network using Home Assistant Supervisor API"""
         try:
-            logger.info(f"🔗 Attempting to connect to WiFi network: {ssid}")
-
-            # DON'T set LED to connecting state here - only after successful connection
-            # set_led_status('wifi_connecting')  # REMOVED - premature LED change
+            logger.info(f"🔗 Connecting to WiFi via HA Supervisor: {ssid}")
             
-            # Save config for persistence
+            # Import Supervisor API helper
+            try:
+                from supervisor_api import SupervisorAPI
+            except ImportError:
+                logger.error("❌ supervisor_api module not found")
+                return {"status": "error", "error": "Supervisor API not available"}
+            
+            # Save config for persistence (in case of reconnection after reboot)
             config = {
                 "ssid": ssid,
                 "password": password,
                 "timestamp": time.time(),
-                "static_ip": os.getenv("STATIC_IP", "192.168.6.161"),
-                "static_gateway": os.getenv("STATIC_GATEWAY", "192.168.6.1"),
-                "static_dns": os.getenv("STATIC_DNS", "8.8.8.8"),
-                "use_static_ip": os.getenv("USE_STATIC_IP", "true") == "true"
+                "configured": True
             }
             
             with open(self.config_path, 'w') as f:
                 json.dump(config, f, indent=2)
+            logger.info(f"📝 WiFi configuration saved to {self.config_path}")
             
-            # Create wpa_supplicant configuration
-            logger.info("📝 Creating wpa_supplicant configuration...")
+            # Initialize Supervisor API
+            supervisor = SupervisorAPI()
             
-            # Try to use wpa_passphrase for proper PSK generation (handles special characters better)
-            try:
-                logger.info("🔧 Generating PSK using wpa_passphrase...")
-                wpa_passphrase_result = subprocess.run([
-                    "wpa_passphrase", ssid, password
-                ], capture_output=True, text=True, timeout=10)
+            # Configure WiFi via HA Supervisor
+            logger.info(f"🔧 Sending WiFi configuration to HA Supervisor...")
+            success = supervisor.configure_wifi(ssid, password)
+            
+            if not success:
+                logger.error("❌ Failed to configure WiFi via Supervisor API")
+                return {"status": "auth_failed", "error": "Please re-enter correct password"}
+            
+            # Wait for HA to connect and assign IP
+            logger.info("⏳ Waiting for HA Supervisor to connect and assign IP...")
+            wifi_ip = supervisor.wait_for_wifi_connection(timeout=30)
+            
+            if not wifi_ip:
+                logger.error("❌ WiFi connection timeout - no IP assigned")
+                # Check if it's an authentication failure
+                wlan0_status = supervisor.get_wlan0_status()
+                if wlan0_status and not wlan0_status.get("connected"):
+                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
+                return {"status": "error", "error": "Connection timeout"}
+            
+            logger.info(f"✅ WiFi connected successfully via HA Supervisor!")
+            logger.info(f"📡 IP Address: {wifi_ip}")
+            
+            # Get MAC address and save IP to Firestore
+            mac_address = get_mac_address()
+            if mac_address:
+                logger.info(f"📍 Hub MAC Address: {mac_address}")
                 
-                if wpa_passphrase_result.returncode == 0:
-                    # Use the generated configuration but add our custom settings
-                    generated_config = wpa_passphrase_result.stdout
-                    
-                    # Modify the generated config to add our custom settings
-                    lines = generated_config.split('\n')
-                    modified_lines = []
-                    in_network_block = False
-                    
-                    for line in lines:
-                        if 'network={' in line:
-                            in_network_block = True
-                            modified_lines.append(line)
-                            modified_lines.append('    priority=1')
-                            modified_lines.append('    scan_ssid=1')
-                            modified_lines.append('    auth_alg=OPEN')
-                        elif in_network_block and line.strip() == '}':
-                            modified_lines.append(line)
-                            in_network_block = False
-                        elif not (line.strip().startswith('#') and 'psk=' in line):
-                            # Skip commented out PSK lines
-                            modified_lines.append(line)
-                    
-                    # Add header
-                    wpa_config = f'''ctrl_interface=/var/run/wpa_supplicant
-update_config=1
-country=US
-
-{chr(10).join(modified_lines)}
-'''
-                    logger.info("✅ Using wpa_passphrase generated configuration")
+                # Save IP to Firestore
+                if FIRESTORE_AVAILABLE:
+                    try:
+                        firestore_helper = FirestoreHelper()
+                        success = firestore_helper.save_hub_ip(mac_address, wifi_ip)
+                        if success:
+                            logger.info(f"✅ IP saved to Firestore: smash_db/{mac_address}/home_ip = {wifi_ip}")
+                        else:
+                            logger.warning(f"⚠️ Failed to save IP to Firestore")
+                    except Exception as e:
+                        logger.error(f"❌ Error saving IP to Firestore: {e}")
                 else:
-                    raise Exception(f"wpa_passphrase failed: {wpa_passphrase_result.stderr}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ wpa_passphrase failed ({e}), using manual configuration")
-                # Fallback to manual configuration with proper escaping
-                escaped_ssid = ssid.replace('"', '\\"').replace('\\', '\\\\')
-                escaped_password = password.replace('"', '\\"').replace('\\', '\\\\')
-                
-                wpa_config = f'''ctrl_interface=/var/run/wpa_supplicant
-update_config=1
-country=US
-
-network={{
-    ssid="{escaped_ssid}"
-    psk="{escaped_password}"
-    key_mgmt=WPA-PSK
-    priority=1
-    scan_ssid=1
-    auth_alg=OPEN
-}}
-'''
-            
-            with open(self.wpa_conf_path, 'w') as f:
-                f.write(wpa_config)
-            
-            # Debug: log the configuration (without exposing the actual password)
-            debug_config = wpa_config.replace(password, "***PASSWORD_HIDDEN***")
-            logger.info(f"📝 wpa_supplicant configuration written:\n{debug_config}")
-            
-            # Ensure wlan0 interface is up
-            logger.info("🔌 Bringing up wlan0 interface...")
-            subprocess.run(["ip", "link", "set", "wlan0", "up"], capture_output=True)
-            
-            # Kill existing wpa_supplicant processes
-            logger.info("🔧 Stopping existing wpa_supplicant...")
-            subprocess.run(["pkill", "-f", "wpa_supplicant"], capture_output=True)
-            time.sleep(2)
-            
-            # Start wpa_supplicant with detailed logging
-            logger.info("🔧 Starting wpa_supplicant...")
-            wpa_result = subprocess.run([
-                "wpa_supplicant", "-B", "-i", "wlan0", 
-                "-c", self.wpa_conf_path, "-D", "nl80211", "-dd"
-            ], capture_output=True, text=True)
-            
-            if wpa_result.returncode != 0:
-                logger.error(f"❌ wpa_supplicant failed: {wpa_result.stderr}")
-                logger.error(f"❌ wpa_supplicant stdout: {wpa_result.stdout}")
-                
-                # Provide more user-friendly error message that Flutter can detect as password-related
-                error_msg = wpa_result.stderr.lower()
-                if ('psk' in error_msg or 'password' in error_msg or 'auth' in error_msg or 
-                    'key' in error_msg or 'invalid' in error_msg or 'fail' in error_msg):
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                else:
-                    return {"status": "error", "error": f"wpa_supplicant authentication error: {wpa_result.stderr}"}
-            
-            # Give wpa_supplicant a moment to initialize
-            logger.info("⏱️ Allowing wpa_supplicant to initialize...")
-            time.sleep(3)
-            
-            logger.info("⏱️ Waiting for WiFi authentication...")
-            # Wait for connection with better status monitoring (increased timeout)
-            for attempt in range(20):  # 20 seconds timeout - better for slower networks
-                time.sleep(1)
-                status_result = subprocess.run(["wpa_cli", "-i", "wlan0", "status"], capture_output=True, text=True)
-                
-                if status_result.returncode != 0:
-                    logger.warning(f"⚠️ wpa_cli status failed: {status_result.stderr}")
-                    continue
-                
-                status_output = status_result.stdout
-                logger.info(f"📊 WPA Status (attempt {attempt+1}): {status_output.split(chr(10))[0]}")
-                
-                if "wpa_state=COMPLETED" in status_output:
-                    logger.info("✅ WiFi authentication successful")
-                    break
-                elif "wpa_state=DISCONNECTED" in status_output:
-                    logger.warning("⚠️ WiFi authentication failed - likely wrong password")
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                elif "wpa_state=SCANNING" in status_output:
-                    logger.info("🔍 Still scanning for network...")
-                elif "wpa_state=ASSOCIATING" in status_output:
-                    logger.info("🔗 Associating with network...")
-                elif "wpa_state=4WAY_HANDSHAKE" in status_output:
-                    logger.info("🤝 Performing 4-way handshake...")
-                elif "wpa_state=INTERFACE_DISABLED" in status_output:
-                    logger.warning("⚠️ WiFi interface disabled - possible authentication failure")
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
+                    logger.warning("⚠️ Firestore not available, IP not saved to database")
             else:
-                # Get final status for debugging
-                final_result = subprocess.run(["wpa_cli", "-i", "wlan0", "status"], capture_output=True, text=True)
-                final_status = final_result.stdout
-                logger.error(f"❌ Authentication timeout. Final status: {final_status}")
-                
-                # Provide user-friendly error based on final status
-                if "wpa_state=DISCONNECTED" in final_status:
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                elif "wpa_state=SCANNING" in final_status:
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                elif "wpa_state=ASSOCIATING" in final_status:
-                    # Association timeout is usually a password issue
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                elif "wpa_state=4WAY_HANDSHAKE" in final_status:
-                    # 4-way handshake timeout is definitely a password issue
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                else:
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
+                logger.warning("⚠️ Could not get MAC address, IP not saved to Firestore")
             
-            # Get IP address and ensure immediate accessibility
-            if config["use_static_ip"]:
-                logger.info(f"🔧 Configuring static IP for immediate accessibility: {config['static_ip']}")
-                
-                # Remove existing IP addresses on wlan0 only
-                subprocess.run(["ip", "addr", "flush", "dev", "wlan0"], capture_output=True)
-                
-                # Add static IP with immediate effect
-                ip_result = subprocess.run([
-                    "ip", "addr", "add", f"{config['static_ip']}/24", "dev", "wlan0"
-                ], capture_output=True, text=True)
-                
-                if ip_result.returncode != 0:
-                    logger.error(f"❌ Failed to set static IP: {ip_result.stderr}")
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                
-                # Ensure interface is up and immediately accessible
-                subprocess.run(["ip", "link", "set", "wlan0", "up"], capture_output=True)
-                
-                # Add default route for WiFi static IP
-                subprocess.run([
-                    "ip", "route", "add", "default", "via", config["static_gateway"], 
-                    "dev", "wlan0", "metric", "100"
-                ], capture_output=True)
-                
-                # IMMEDIATE ACTIVATION: Ensure WiFi interface is immediately accessible
-                wifi_ip = config["static_ip"]
-                logger.info(f"🚀 IMMEDIATE ACTIVATION: Making WiFi {wifi_ip} accessible for Home Assistant...")
-
-                # Force interface up and verify IP is active
-                subprocess.run(["ip", "link", "set", "wlan0", "up"], capture_output=True)
-
-                # CRITICAL: Verify IP is assigned and active before routing
-                ip_verify = subprocess.run(["ip", "addr", "show", "wlan0"], capture_output=True, text=True)
-                if wifi_ip in ip_verify.stdout:
-                    logger.info(f"✅ WiFi IP {wifi_ip} is active and ready")
-                else:
-                    logger.warning(f"⚠️ WiFi IP {wifi_ip} not found in interface, forcing assignment...")
-                    # Force IP assignment if not present
-                    subprocess.run([
-                        "ip", "addr", "add", f"{wifi_ip}/24", "dev", "wlan0"
-                    ], capture_output=True)
-
-                    # Verify assignment worked
-                    ip_verify2 = subprocess.run(["ip", "addr", "show", "wlan0"], capture_output=True, text=True)
-                    if wifi_ip in ip_verify2.stdout:
-                        logger.info(f"✅ WiFi IP {wifi_ip} successfully assigned")
-                    else:
-                        logger.error(f"❌ Failed to assign WiFi IP {wifi_ip}")
-                        return {"status": "error", "error": "Failed to configure WiFi IP address"}
-
-                # Setup dual network routing for immediate access
-                has_ethernet = self._setup_dual_network_routing(
-                    wifi_ip=wifi_ip,
-                    wifi_gateway=config["static_gateway"],
-                    is_static=True
-                )
-
-                ip_address = wifi_ip
-
-                # FINAL VERIFICATION: Ensure WiFi IP is accessible for Home Assistant
-                final_check = subprocess.run(["ip", "addr", "show", "wlan0"], capture_output=True, text=True)
-                route_check = subprocess.run(["ip", "route", "show", "dev", "wlan0"], capture_output=True, text=True)
-
-                logger.info(f"🔍 Final WiFi verification:")
-                logger.info(f"   IP assigned: {'✅' if wifi_ip in final_check.stdout else '❌'}")
-                logger.info(f"   Routes configured: {'✅' if wifi_ip in route_check.stdout else '❌'}")
-
-                # Test local connectivity to the WiFi IP
-                ping_test = subprocess.run([
-                    "ping", "-c", "1", "-W", "2", wifi_ip
-                ], capture_output=True, text=True)
-
-                logger.info(f"   Local ping test: {'✅' if ping_test.returncode == 0 else '❌'}")
-
-                if wifi_ip in final_check.stdout and ping_test.returncode == 0:
-                    logger.info(f"🎯 WiFi Home Assistant IMMEDIATELY accessible at: http://{ip_address}:8123")
-                else:
-                    logger.error(f"❌ WiFi IP {wifi_ip} verification failed - not accessible")
-                    logger.error(f"   IP check: {'✅' if wifi_ip in final_check.stdout else '❌'}")
-                    logger.error(f"   Ping test: {'✅' if ping_test.returncode == 0 else '❌'}")
-                    # Don't return error - continue with connection but log the issue
-                    logger.warning("⚠️ Continuing despite verification issues...")
-
-                # Immediate LED update for successful connection
-                update_network_led_status()
-            else:
-                logger.info("🔧 Using DHCP for IP configuration")
-                dhcp_result = subprocess.run(["dhclient", "wlan0"], capture_output=True, text=True)
-                
-                if dhcp_result.returncode != 0:
-                    logger.warning(f"⚠️ DHCP client warning: {dhcp_result.stderr}")
-                
-                # IMMEDIATE ACTIVATION: Reduce wait time and ensure interface is ready
-                time.sleep(2)  # Reduced from 5 to 2 seconds for faster access
-
-                # Force interface up for immediate access
-                subprocess.run(["ip", "link", "set", "wlan0", "up"], capture_output=True)
-
-                # Get assigned IP with multiple attempts for reliability
-                ip_address = "unknown"
-                for attempt in range(3):  # Try 3 times for reliability
-                    ip_result = subprocess.run(["ip", "addr", "show", "wlan0"], capture_output=True, text=True)
-                    ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)', ip_result.stdout)
-                    if ip_match:
-                        ip_address = ip_match.group(1)
-                        break
-                    time.sleep(1)  # Wait 1 second between attempts
-
-                if ip_address == "unknown":
-                    logger.error("❌ No IP address assigned after multiple attempts")
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-
-                logger.info(f"🚀 DHCP WiFi IP {ip_address} assigned and ready for immediate access")
-                
-                # Get the WiFi gateway for DHCP configuration
-                route_check = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
-                wifi_gateway = None
-
-                # Find WiFi gateway from routing table
-                for route_line in route_check.stdout.split('\n'):
-                    if 'wlan0' in route_line and 'default' in route_line:
-                        parts = route_line.split()
-                        if 'via' in parts:
-                            gateway_idx = parts.index('via') + 1
-                            if gateway_idx < len(parts):
-                                wifi_gateway = parts[gateway_idx]
-                                break
-
-                # If no gateway found, try to get it from the interface
-                if not wifi_gateway:
-                    # Get gateway from DHCP lease or interface configuration
-                    gateway_result = subprocess.run(["ip", "route", "show", "dev", "wlan0"], capture_output=True, text=True)
-                    for line in gateway_result.stdout.split('\n'):
-                        if 'default' in line and 'via' in line:
-                            parts = line.split()
-                            if 'via' in parts:
-                                gateway_idx = parts.index('via') + 1
-                                if gateway_idx < len(parts):
-                                    wifi_gateway = parts[gateway_idx]
-                                    break
-
-                # Setup dual network routing using the helper function
-                if wifi_gateway:
-                    has_ethernet = self._setup_dual_network_routing(
-                        wifi_ip=ip_address,
-                        wifi_gateway=wifi_gateway,
-                        is_static=False
-                    )
-                    logger.info(f"🎯 DHCP WiFi Home Assistant IMMEDIATELY accessible at: http://{ip_address}:8123")
-                else:
-                    logger.warning("⚠️ Could not determine WiFi gateway for DHCP configuration")
-                    # Fallback: just check if Ethernet exists
-                    eth_status = self._check_ethernet_connection()
-                    has_ethernet = eth_status['connected']
-                    logger.info(f"🎯 WiFi IP {ip_address} configured (no gateway found)")
-
-                # Force immediate LED update
-                update_network_led_status()
+            # Check if Ethernet is also connected (dual network)
+            eth_status = supervisor.get_ethernet_status()
+            has_ethernet = eth_status is not None
             
-            logger.info(f"📡 Assigned IP address: {ip_address}")
-            
-            # Check network access status for proper reporting
-            eth_status = self._check_ethernet_connection()
-            has_ethernet = eth_status['connected']
-            eth_ip = eth_status['ip']
-            
-            # Verify connectivity
-            logger.info("🔍 Testing internet connectivity...")
-            ping_result = subprocess.run(["ping", "-c", "3", "-W", "5", "8.8.8.8"], capture_output=True, text=True)
-            
-            # Prepare connection status with dual network info
+            # Prepare connection result
             connection_result = {
                 "status": "connected",
-                "ip": ip_address,
-                "wifi_ip": ip_address,
+                "ip": wifi_ip,
+                "wifi_ip": wifi_ip,
                 "ssid": ssid,
-                "hub_url": f"http://{ip_address}:8123"
+                "hub_url": f"http://{wifi_ip}:8123"
             }
             
+            if mac_address:
+                connection_result["mac_address"] = mac_address
+            
             # Add Ethernet information if available
-            if has_ethernet and eth_ip:
+            if has_ethernet:
+                eth_ip_with_subnet = eth_status["ipv4"]["address"][0]
+                eth_ip = eth_ip_with_subnet.split("/")[0]
+                
                 connection_result.update({
                     "ethernet_ip": eth_ip,
                     "connection_type": "dual_network",
                     "ethernet_hub_url": f"http://{eth_ip}:8123",
-                    "message": f"WiFi connected at {ip_address}. Ethernet remains accessible at {eth_ip}"
+                    "message": f"WiFi connected at {wifi_ip}. Ethernet remains accessible at {eth_ip}"
                 })
-                logger.info(f"🌐 Dual network access: WiFi={ip_address}, Ethernet={eth_ip}")
+                logger.info(f"🌐 Dual network access: WiFi={wifi_ip}, Ethernet={eth_ip}")
             else:
                 connection_result.update({
                     "connection_type": "wifi_only",
-                    "message": f"WiFi connected at {ip_address}"
+                    "message": f"WiFi connected at {wifi_ip}"
                 })
-                logger.info(f"📶 WiFi-only access: {ip_address}")
+                logger.info(f"📶 WiFi-only access: {wifi_ip}")
             
-            if ping_result.returncode == 0:
-                logger.info(f"✅ WiFi connection successful with internet access!")
-                # Use comprehensive LED status check
-                update_network_led_status()
-                return connection_result
-            else:
-                logger.warning(f"⚠️ WiFi connected but no internet access via WiFi: {ping_result.stderr}")
-                connection_result["status"] = "connected_no_internet"
-                # Use comprehensive LED status check
-                update_network_led_status()
-                return connection_result
+            # Update LED status to reflect connection
+            logger.info("🚥 Updating LED status...")
+            update_network_led_status()
+            
+            logger.info(f"🎉 WiFi connection complete via HA Supervisor!")
+            logger.info(f"🌐 Home Assistant accessible at: http://{wifi_ip}:8123")
+            logger.info(f"📱 Check HA Dashboard → Settings → Network to see wlan0 connected")
+            
+            return connection_result
                 
         except Exception as e:
-            logger.error(f"❌ Failed to connect to WiFi: {e}")
+            logger.error(f"❌ Failed to connect to WiFi via Supervisor API: {e}")
+            logger.error(f"   Error details: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(f"   Stack trace: {traceback.format_exc()}")
             set_led_status('error')
-            return {"status": "auth_failed", "error": "Please re-enter correct password"}
+            return {"status": "error", "error": f"Connection failed: {str(e)}"}
 
     def load_saved_config(self) -> Optional[Dict]:
         """Load saved Wi-Fi configuration."""
@@ -1166,9 +939,9 @@ network={{
                 'ssid': ssid,
                 'password': password,
                 'configured': True,
-                'use_static_ip': os.getenv('USE_STATIC_IP', 'true').lower() == 'true',
-                'static_ip': os.getenv('STATIC_IP', '192.168.6.161'),
-                'static_gateway': os.getenv('STATIC_GATEWAY', '192.168.6.1'),
+                'use_static_ip': os.getenv('USE_STATIC_IP', 'false').lower() == 'true',  # Changed default to false for DHCP
+                'static_ip': os.getenv('STATIC_IP', ''),
+                'static_gateway': os.getenv('STATIC_GATEWAY', ''),
                 'static_dns': os.getenv('STATIC_DNS', '8.8.8.8'),
                 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ')
             }
@@ -1998,12 +1771,18 @@ if DBUS_AVAILABLE:
         def ReadValue(self, options):
             logger.info("ℹ️ Client requested device info")
             
+            # Get MAC address
+            mac_address = get_mac_address()
+            
             info = {
                 'device_name': self.service.wifi_controller.device_name if hasattr(self.service.wifi_controller, 'device_name') else 'SMASH-Hub',
                 'firmware_version': '1.0.0',
                 'hardware_version': 'RPi5',
-                'manufacturer': 'Schnell'
+                'manufacturer': 'Schnell',
+                'mac_address': mac_address if mac_address else 'UNKNOWN'
             }
+            
+            logger.info(f"📍 Sending device info with MAC: {mac_address}")
             
             response = json.dumps(info)
             return [dbus.Byte(c) for c in response.encode('utf-8')]
