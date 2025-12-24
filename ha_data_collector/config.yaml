@@ -3,6 +3,7 @@ description: "Collects Home Assistant events and sends them to Google Sheets for
 version: "1.0.0"
 slug: "ha_data_collector"
 init: false
+hassio_api: true
 arch:
   - armhf
   - armv7
