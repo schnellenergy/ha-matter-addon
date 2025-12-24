@@ -467,9 +467,73 @@ class HomeAssistantDataCollector:
 
         return formatted_data
 
+    async def fetch_entity_registry_data(self, entity_id: str) -> Dict[str, Any]:
+        """Fetch entity registry data from Home Assistant API"""
+        try:
+            headers = self.get_auth_headers()
+            # Get entity registry data
+            response = requests.get(
+                f"{self.ha_url}/api/config/entity_registry/{entity_id}",
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.debug(f"Could not fetch entity registry for {entity_id}: {response.status_code}")
+                return {}
+        except Exception as e:
+            logger.debug(f"Error fetching entity registry: {e}")
+            return {}
+
     def extract_dashboard_attributes(self, formatted_data: Dict[str, Any], event_type: str, event_data: Dict[str, Any]):
         """Extract detailed attributes for dashboard analytics"""
         try:
+            # Fetch entity registry data for device_id, area_id, etc.
+            entity_id = formatted_data.get('entity_id', '')
+            if entity_id:
+                # Try to get entity registry data synchronously
+                try:
+                    headers = self.get_auth_headers()
+                    response = requests.get(
+                        f"{self.ha_url}/api/config/entity_registry/{entity_id}",
+                        headers=headers,
+                        timeout=2
+                    )
+                    
+                    if response.status_code == 200:
+                        registry_data = response.json()
+                        formatted_data['device_id'] = registry_data.get('device_id', '')
+                        formatted_data['area_id'] = registry_data.get('area_id', '')
+                        formatted_data['platform'] = registry_data.get('platform', '')
+                        
+                        # Fetch area name if area_id exists
+                        area_id = formatted_data.get('area_id', '')
+                        if area_id:
+                            area_response = requests.get(
+                                f"{self.ha_url}/api/config/area_registry/{area_id}",
+                                headers=headers,
+                                timeout=2
+                            )
+                            if area_response.status_code == 200:
+                                area_data = area_response.json()
+                                formatted_data['area_name'] = area_data.get('name', '')
+                        
+                        # Fetch device name if device_id exists
+                        device_id = formatted_data.get('device_id', '')
+                        if device_id:
+                            device_response = requests.get(
+                                f"{self.ha_url}/api/config/device_registry/{device_id}",
+                                headers=headers,
+                                timeout=2
+                            )
+                            if device_response.status_code == 200:
+                                device_data = device_response.json()
+                                formatted_data['device_name'] = device_data.get('name_by_user') or device_data.get('name', '')
+                except Exception as e:
+                    logger.debug(f"Error fetching registry data: {e}")
+
             # Parse timestamp for time-based analytics (convert to IST for analysis)
             timestamp_str = formatted_data.get('timestamp', '')
             if timestamp_str:
