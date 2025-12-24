@@ -55,9 +55,10 @@ class HomeAssistantDataCollector:
         self.processed_events = set()  # Store processed event IDs
         self.dedup_window = 2  # seconds to consider events as duplicates
 
-        # Connect directly to Home Assistant like the Flutter app does
-        self.ha_url = "http://192.168.6.166:8123"
-        self.websocket_url = "ws://192.168.6.166:8123/api/websocket"
+        # Get Home Assistant URL from environment (set by run.sh)
+        # This allows the addon to work with any HA instance
+        self.ha_url = os.getenv('HA_URL', 'http://supervisor/core')
+        self.websocket_url = os.getenv('HA_WEBSOCKET_URL', 'ws://supervisor/core/websocket')
 
         # Get supervisor token for add-on authentication
         self.supervisor_token = os.getenv('SUPERVISOR_TOKEN', '')
