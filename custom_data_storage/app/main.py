@@ -375,12 +375,21 @@ if socketio:
             logger.error(f"WebSocket error: {e}")
             emit('error', {'message': str(e)})
 
+# --- OTA manifest endpoint (additive; does not modify existing routes) -----
+try:
+    from ota_manifest import ota_manifest_bp  # noqa: E402
+    app.register_blueprint(ota_manifest_bp)
+    logger.info("Registered OTA manifest blueprint at /api/ota/manifest/*")
+except Exception as _ota_err:  # noqa: BLE001
+    logger.warning("OTA manifest blueprint not registered: %s", _ota_err)
+# ---------------------------------------------------------------------------
+
 if __name__ == '__main__':
     logger.info("Starting Custom Data Storage Add-on")
     logger.info(f"Storage path: {STORAGE_PATH}")
     logger.info(f"WebSocket enabled: {ENABLE_WEBSOCKET}")
     logger.info(f"CORS enabled: {ENABLE_CORS}")
-    
+
     if socketio:
         socketio.run(app, host='0.0.0.0', port=8100, debug=(LOG_LEVEL == 'DEBUG'))
     else:
