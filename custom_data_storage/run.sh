@@ -10,6 +10,7 @@ export MAX_STORAGE_SIZE_MB="${MAX_STORAGE_SIZE_MB:-100}"
 export ENABLE_WEBSOCKET="${ENABLE_WEBSOCKET:-true}"
 export ENABLE_CORS="${ENABLE_CORS:-true}"
 export API_KEY="${API_KEY:-}"
+export OTA_PROVIDER_DIR="${OTA_PROVIDER_DIR:-/addon_configs/core_matter_server/updates}"
 
 # Create storage directory if it doesn't exist
 mkdir -p "${STORAGE_PATH}"
