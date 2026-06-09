@@ -23,14 +23,25 @@ from flask_socketio import SocketIO, emit
 # Import storage backends
 from database_storage import DatabaseStorage
 
-# Configuration
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'info').upper()
-STORAGE_PATH = os.getenv('STORAGE_PATH', '/data/custom_storage')
-MAX_STORAGE_SIZE_MB = int(os.getenv('MAX_STORAGE_SIZE_MB', '2000'))
-ENABLE_WEBSOCKET = os.getenv('ENABLE_WEBSOCKET', 'true').lower() == 'true'
-ENABLE_CORS = os.getenv('ENABLE_CORS', 'true').lower() == 'true'
-API_KEY = os.getenv('API_KEY', '')
-SECURE_HA_TOKEN = os.getenv('SECURE_HA_TOKEN', '')
+# Configuration — HA supervisor writes addon options to /data/options.json.
+# Read that file first, then fall back to env vars (useful for local testing).
+_OPTIONS_FILE = '/data/options.json'
+try:
+    with open(_OPTIONS_FILE) as _f:
+        _opts = json.load(_f)
+except Exception:
+    _opts = {}
+
+def _cfg(key, default=''):
+    return _opts.get(key, os.getenv(key.upper(), default))
+
+LOG_LEVEL = str(_cfg('log_level', 'info')).upper()
+STORAGE_PATH = str(_cfg('storage_path', '/data/custom_storage'))
+MAX_STORAGE_SIZE_MB = int(_cfg('max_storage_size_mb', '2000'))
+ENABLE_WEBSOCKET = str(_cfg('enable_websocket', 'true')).lower() == 'true'
+ENABLE_CORS = str(_cfg('enable_cors', 'true')).lower() == 'true'
+API_KEY = str(_cfg('api_key', ''))
+SECURE_HA_TOKEN = str(_cfg('secure_ha_token', ''))
 
 # Setup logging
 logging.basicConfig(
