@@ -10,6 +10,7 @@ export MAX_STORAGE_SIZE_MB="${MAX_STORAGE_SIZE_MB:-100}"
 export ENABLE_WEBSOCKET="${ENABLE_WEBSOCKET:-true}"
 export ENABLE_CORS="${ENABLE_CORS:-true}"
 export API_KEY="${API_KEY:-}"
+export SECURE_HA_TOKEN="${SECURE_HA_TOKEN:-}"
 
 # Create storage directory if it doesn't exist
 mkdir -p "${STORAGE_PATH}"
@@ -21,7 +22,8 @@ echo "  Storage Path: ${STORAGE_PATH}"
 echo "  Max Storage Size: ${MAX_STORAGE_SIZE_MB}MB"
 echo "  WebSocket Enabled: ${ENABLE_WEBSOCKET}"
 echo "  CORS Enabled: ${ENABLE_CORS}"
-echo "  API Key Set: $([ -n "${API_KEY}" ] && echo "Yes" || echo "No")"
+echo "  API Key Set: $([ -n "${API_KEY}" ] && echo 'Yes' || echo 'No')"
+echo "  HA Token Set: $([ -n "${SECURE_HA_TOKEN}" ] && echo 'Yes' || echo 'No')"
 
 # Start the application
 cd /app
