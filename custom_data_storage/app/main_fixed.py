@@ -30,6 +30,7 @@ MAX_STORAGE_SIZE_MB = int(os.getenv('MAX_STORAGE_SIZE_MB', '2000'))
 ENABLE_WEBSOCKET = os.getenv('ENABLE_WEBSOCKET', 'true').lower() == 'true'
 ENABLE_CORS = os.getenv('ENABLE_CORS', 'true').lower() == 'true'
 API_KEY = os.getenv('API_KEY', '')
+SECURE_HA_TOKEN = os.getenv('SECURE_HA_TOKEN', '')
 
 # Setup logging
 logging.basicConfig(
@@ -149,6 +150,16 @@ def health_check():
         'total_categories': metadata.get('total_categories', 0),
         'websocket_enabled': ENABLE_WEBSOCKET
     })
+
+@app.route('/api/ha-token', methods=['GET'])
+def get_ha_token():
+    """Return the HA long-lived access token stored in addon config.
+    Accessible on LAN only (no extra auth required — trust model matches HA itself)."""
+    if not SECURE_HA_TOKEN:
+        logger.warning("HA token requested but not configured in addon settings")
+        return jsonify({'error': 'HA token not configured. Open addon Settings and paste your token in the secure_ha_token field.'}), 404
+    logger.info("HA token served to requesting client")
+    return jsonify({'token': SECURE_HA_TOKEN})
 
 @app.route('/api/data', methods=['POST'])
 def set_data():

@@ -16,7 +16,8 @@
     "max_storage_size_mb": 2000,
     "enable_websocket": true,
     "enable_cors": true,
-    "api_key": ""
+    "api_key": "",
+    "secure_ha_token": ""
   },
   "schema": {
     "log_level": "list(trace|debug|info|warning|error|fatal)?",
@@ -24,7 +25,8 @@
     "max_storage_size_mb": "int(100,10000)?",
     "enable_websocket": "bool?",
     "enable_cors": "bool?",
-    "api_key": "str?"
+    "api_key": "str?",
+    "secure_ha_token": "password?"
   },
   "ports": {
     "8100/tcp": 8100
