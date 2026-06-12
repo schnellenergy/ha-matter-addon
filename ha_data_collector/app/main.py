@@ -32,6 +32,32 @@ class HomeAssistantDataCollector:
         self.ha_token = os.getenv('HA_TOKEN')
         self.google_sheets_url = os.getenv('GOOGLE_SHEETS_URL')
 
+        # Fallback to local config.yaml (useful for running locally on developer PC)
+        if not self.ha_token or not self.google_sheets_url:
+            try:
+                config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config.yaml'))
+                if os.path.exists(config_path):
+                    logger.info(f"📝 Loading configuration from {config_path}...")
+                    with open(config_path, 'r') as f:
+                        lines = f.readlines()
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith('google_sheets_url:'):
+                                val = line.split(':', 1)[1].strip().strip('"').strip("'")
+                                if not self.google_sheets_url:
+                                    self.google_sheets_url = val
+                            elif line.startswith('ha_token:'):
+                                val = line.split(':', 1)[1].strip().strip('"').strip("'")
+                                if not self.ha_token:
+                                    self.ha_token = val
+                            elif line.startswith('ha_ip:'):
+                                val = line.split(':', 1)[1].strip().strip('"').strip("'")
+                                if val:
+                                    self.ha_url = f"http://{val}:8123"
+                                    self.websocket_url = f"ws://{val}:8123/api/websocket"
+            except Exception as e:
+                logger.warning(f"Could not load config.yaml: {e}")
+
         # Optional configuration with smart defaults
         self.collect_historical = os.getenv(
             'COLLECT_HISTORICAL', 'true').lower() == 'true'
@@ -97,15 +123,24 @@ class HomeAssistantDataCollector:
 
     def get_auth_headers(self):
         """Get authentication headers for Home Assistant API calls"""
-        # Always use HA token for direct connection authentication
-        if self.ha_token:
+        token = self.ha_token
+        # If connecting internally to supervisor, prefer supervisor_token
+        if self.ha_url and "supervisor" in self.ha_url.lower() and self.supervisor_token:
+            token = self.supervisor_token
+            logger.debug(f"🔐 Using internal Supervisor token for API auth")
+        elif not token and self.supervisor_token:
+            token = self.supervisor_token
+            logger.debug(f"🔐 Using fallback Supervisor token for API auth")
+        else:
             logger.debug(f"🔐 Using HA token for API auth")
+
+        if token:
             return {
-                'Authorization': f'Bearer {self.ha_token}',
+                'Authorization': f'Bearer {token}',
                 'Content-Type': 'application/json'
             }
         else:
-            logger.error("❌ No HA token available for authentication")
+            logger.error("❌ No token available for authentication")
             return {
                 'Content-Type': 'application/json'
             }
@@ -393,6 +428,7 @@ class HomeAssistantDataCollector:
             'day_of_week': '',
             'use_case': '',
             'ha_event_type': event_type,
+            'event_type': event_type,
             'entity_id': '',
             'old_state': '',
             'new_state': '',
@@ -1084,12 +1120,11 @@ class HomeAssistantDataCollector:
             logger.error(f"Error checking state changes: {e}")
 
     async def test_api_connectivity(self):
-        """Test basic API connectivity"""
+        """Test basic API connectivity with automatic supervisor fallback"""
+        # First try the configured HA URL
         try:
             headers = self.get_auth_headers()
-
-            # Test basic API
-            logger.info("🔍 Testing Home Assistant API connectivity...")
+            logger.info(f"🔍 Testing Home Assistant API connectivity at {self.ha_url}...")
             response = requests.get(
                 f"{self.ha_url}/api/", headers=headers, timeout=10)
 
@@ -1097,62 +1132,78 @@ class HomeAssistantDataCollector:
                 logger.info("✅ API connectivity test passed")
                 api_response = response.json()
                 logger.info(f"API Response: {api_response}")
+                
+                # Test states endpoint
+                logger.info("🔍 Testing states endpoint...")
+                response = requests.get(
+                    f"{self.ha_url}/api/states", headers=headers, timeout=10)
+
+                if response.status_code == 200:
+                    states = response.json()
+                    logger.info(
+                        f"✅ States endpoint working - found {len(states)} entities")
+
+                    # Look for your button specifically
+                    button_entities = [s for s in states if 'button' in s.get(
+                        'entity_id', '').lower() or 'arre' in s.get('entity_id', '').lower()]
+                    if button_entities:
+                        logger.info(
+                            f"🔘 Found button entities: {[e['entity_id'] for e in button_entities]}")
+                    else:
+                        logger.warning("⚠️  No button entities found")
+                else:
+                    logger.error(f"❌ States test failed: {response.status_code}")
+
+                # Test logbook endpoint
+                logger.info("🔍 Testing logbook endpoint...")
+                from datetime import timedelta
+                start_time = datetime.now(timezone.utc) - timedelta(hours=1)
+                start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+                response = requests.get(
+                    f"{self.ha_url}/api/logbook/{start_time_str}", headers=headers, timeout=10)
+
+                if response.status_code == 200:
+                    logbook = response.json()
+                    logger.info(
+                        f"✅ Logbook endpoint working - found {len(logbook)} entries")
+                else:
+                    logger.error(f"❌ Logbook test failed: {response.status_code}")
+
+                return True
             else:
                 logger.error(
                     f"❌ API test failed: {response.status_code} - {response.text}")
-                return False
-
-            # Test states endpoint
-            logger.info("🔍 Testing states endpoint...")
-            response = requests.get(
-                f"{self.ha_url}/api/states", headers=headers, timeout=10)
-
-            if response.status_code == 200:
-                states = response.json()
-                logger.info(
-                    f"✅ States endpoint working - found {len(states)} entities")
-
-                # Look for your button specifically
-                button_entities = [s for s in states if 'button' in s.get(
-                    'entity_id', '').lower() or 'arre' in s.get('entity_id', '').lower()]
-                if button_entities:
-                    logger.info(
-                        f"🔘 Found button entities: {[e['entity_id'] for e in button_entities]}")
-                else:
-                    logger.warning("⚠️  No button entities found")
-            else:
-                logger.error(f"❌ States test failed: {response.status_code}")
-
-            # Test logbook endpoint
-            logger.info("🔍 Testing logbook endpoint...")
-            from datetime import timedelta
-            start_time = datetime.now(timezone.utc) - timedelta(hours=1)
-            start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%S%z')
-
-            response = requests.get(
-                f"{self.ha_url}/api/logbook/{start_time_str}", headers=headers, timeout=10)
-
-            if response.status_code == 200:
-                logbook = response.json()
-                logger.info(
-                    f"✅ Logbook endpoint working - found {len(logbook)} entries")
-
-                # Look for button events
-                button_events = [e for e in logbook if 'button' in e.get(
-                    'name', '').lower() or 'arre' in e.get('name', '').lower()]
-                if button_events:
-                    logger.info(
-                        f"🔘 Found button events in logbook: {len(button_events)}")
-                    logger.info(
-                        f"Latest button event: {button_events[0] if button_events else 'None'}")
-            else:
-                logger.error(f"❌ Logbook test failed: {response.status_code}")
-
-            return True
-
         except Exception as e:
-            logger.error(f"❌ API connectivity test failed: {e}")
-            return False
+            logger.warning(f"⚠️ API connectivity test failed at {self.ha_url}: {e}")
+
+        # If fallback is possible, try supervisor
+        if self.supervisor_token and "supervisor" not in self.ha_url.lower():
+            logger.info("🔄 Falling back to internal Supervisor API proxy...")
+            orig_ha_url = self.ha_url
+            orig_websocket_url = self.websocket_url
+            
+            self.ha_url = 'http://supervisor/core'
+            self.websocket_url = 'ws://supervisor/core/websocket'
+            
+            try:
+                headers = self.get_auth_headers()
+                response = requests.get(
+                    f"{self.ha_url}/api/", headers=headers, timeout=10)
+                if response.status_code == 200:
+                    logger.info("✅ Internal Supervisor API proxy connectivity passed!")
+                    # Check states endpoint to be sure
+                    states_resp = requests.get(f"{self.ha_url}/api/states", headers=headers, timeout=10)
+                    if states_resp.status_code == 200:
+                        logger.info(f"✅ Internal states endpoint working: found {len(states_resp.json())} entities")
+                    return True
+            except Exception as e:
+                logger.error(f"❌ Internal Supervisor API proxy also failed: {e}")
+                # Restore original URLs
+                self.ha_url = orig_ha_url
+                self.websocket_url = orig_websocket_url
+
+        return False
 
     async def listen_to_logbook_stream(self):
         """Listen to Home Assistant logbook stream using proper API"""
@@ -1161,13 +1212,16 @@ class HomeAssistantDataCollector:
         while True:
             try:
                 logger.info(
-                    "🔗 Connecting to Home Assistant WebSocket for LOGBOOK STREAM...")
+                    f"🔗 Connecting to Home Assistant WebSocket for LOGBOOK STREAM at {self.websocket_url}...")
 
                 async with websockets.connect(self.websocket_url) as websocket:
                     # Authenticate
+                    token_to_use = self.supervisor_token if "supervisor" in self.websocket_url.lower() else self.ha_token
+                    if not token_to_use:
+                        token_to_use = self.ha_token or self.supervisor_token
                     auth_msg = {
                         "type": "auth",
-                        "access_token": self.ha_token
+                        "access_token": token_to_use
                     }
                     await websocket.send(json.dumps(auth_msg))
 
@@ -1185,7 +1239,7 @@ class HomeAssistantDataCollector:
                     if auth_data.get('type') != 'auth_ok':
                         logger.error(
                             f"❌ WebSocket authentication failed: {auth_data}")
-                        return
+                        raise Exception(f"WebSocket auth failed: {auth_data}")
 
                     logger.info("✅ WebSocket authenticated for logbook stream")
 
@@ -1215,7 +1269,7 @@ class HomeAssistantDataCollector:
                     else:
                         logger.error(
                             f"❌ Failed to subscribe to events: {sub_data}")
-                        return
+                        raise Exception(f"WebSocket subscribe failed: {sub_data}")
 
                     async for message in websocket:
                         try:
@@ -1237,7 +1291,14 @@ class HomeAssistantDataCollector:
 
             except Exception as e:
                 logger.error(f"Logbook WebSocket connection error: {e}")
-                await asyncio.sleep(5)
+                # If fallback is possible, do it
+                if self.supervisor_token and "supervisor" not in self.websocket_url.lower():
+                    logger.info("🔄 WebSocket connection failed. Falling back to internal Supervisor WebSocket proxy...")
+                    self.websocket_url = 'ws://supervisor/core/websocket'
+                    self.ha_url = 'http://supervisor/core'
+                    await asyncio.sleep(1)
+                else:
+                    await asyncio.sleep(5)
                 logger.info("🔄 Retrying logbook WebSocket connection...")
 
     async def listen_to_websocket_simple(self):
@@ -1490,22 +1551,30 @@ class HomeAssistantDataCollector:
 
 
 # Flask web interface
+collector = None
 app = Flask(__name__)
 
 
 @app.route('/')
 def index():
+    if collector is None:
+        return "Collector is not initialized yet", 503
     return render_template('index.html', stats=collector.stats)
 
 
 @app.route('/api/stats')
 def api_stats():
+    if collector is None:
+        return jsonify({'status': 'error', 'message': 'Collector not initialized'}), 503
     return jsonify(collector.stats)
 
 
 @app.route('/api/test')
 def api_test():
     """Test Google Sheets connection"""
+    if collector is None:
+        return jsonify({'success': False, 'error': 'Collector not initialized'}), 503
+        
     test_data = {
         'event_id': 'test_' + str(int(time.time())),
         'timestamp': datetime.now(timezone.utc).isoformat(),
