@@ -1,8 +1,24 @@
-# CHIP Tool API Server
+# Schnell Home Automation Add-ons
 
-This project provides a simple Flask-based HTTP API wrapper around the [Connected Home over IP (CHIP)](https://github.com/project-chip/connectedhomeip) command-line tool `chip-tool`. It allows you to trigger CHIP commands via HTTP requests.
+This repository contains a collection of custom Home Assistant add-ons developed for the Schnell Home Automation ecosystem.
+
+## 📦 Available Add-ons
+
+### 1. HA Data Catcher (`ha_data_catcher`)
+Collects Home Assistant events in real-time, enriches them with Custom Storage metadata, and streams them securely to Firestore and BigQuery for analytics.
+
+### 2. WiFi Onboarding (`wifi_onboarding`)
+SMASH Hub BLE WiFi Onboarding Add-on. Handles initial device setup and onboarding over Bluetooth Low Energy.
+
+### 3. Custom Data Storage (`custom_data_storage`)
+Provides SQLite-based storage for handling large amounts of data efficiently. Store and access custom values for the home automation app via REST API and WebSocket.
+
+### 4. CHIP Tool API Server (`chip_tool_api`)
+Provides a simple Flask-based HTTP API wrapper around the [Connected Home over IP (CHIP)](https://github.com/project-chip/connectedhomeip) command-line tool `chip-tool`. It allows you to trigger CHIP/Matter commands via HTTP requests.
 
 ---
+
+## 🛠 CHIP Tool API Server Documentation
 
 ## 📦 Features
 
@@ -148,3 +164,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
