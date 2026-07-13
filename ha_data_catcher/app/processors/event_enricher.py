@@ -1,16 +1,44 @@
 import json
-from typing import Dict, Any, Optional
+from collections import OrderedDict
+from typing import Dict, Any, Optional, Tuple
 from logger import logger
 
 class EventEnricher:
     """Enriches baseline parsed events with Custom Storage metadata and HA registry mappings."""
-    
+
+    # Max entries kept in the context-correlation caches below. HA context ids are
+    # short-lived (one user action's fan-out, seconds at most) so this is generous
+    # headroom, not a real limit on throughput — old entries are evicted FIFO.
+    _MAX_CONTEXT_CACHE = 20000
+
     def __init__(self):
         # Local cache of HA registries (updated by the websocket collector)
         self.ha_entity_registry: Dict[str, Dict[str, Any]] = {}
         self.ha_device_registry: Dict[str, Dict[str, Any]] = {}
         self.ha_area_registry: Dict[str, Dict[str, Any]] = {}
         self.ha_floor_registry: Dict[str, Dict[str, Any]] = {}
+
+        # Cache for last command timestamps per entity to calculate latencies
+        self.last_command_ts_cache: Dict[str, str] = {}
+
+        # The HA user id the mobile app's long-lived access token authenticates
+        # as. Not configured — the app itself reports this the first time it
+        # captures its own context.user_id off a command response, via Custom
+        # Storage (which the app already writes to and this add-on already
+        # polls every 30s — see CustomStorageCollector / main.py). Stays None
+        # until that report arrives, in which case app:/ha_ui: classification
+        # is simply skipped (fail-safe) and every other tag keeps working.
+        self.app_ha_user_id: Optional[str] = None
+
+        # context_id -> "automation:<entity_id>" / "scene:<entity_id>" for the
+        # action that context belongs to. Populated the moment the initiating
+        # automation_triggered / scene call_service event is seen, so every
+        # later fan-out row sharing that context_id can be attributed back to it.
+        self._context_origin: "OrderedDict[str, str]" = OrderedDict()
+
+        # context_id -> True once its first (initiating) row has been stamped
+        # is_trigger=True. Every later row for the same context_id is fan-out.
+        self._seen_trigger_contexts: "OrderedDict[str, bool]" = OrderedDict()
 
     def update_ha_registries(
         self,
@@ -70,8 +98,86 @@ class EventEnricher:
         
         if ha_num and custom_num and ha_num == custom_num:
             return True
-            
+
         return False
+
+    def _evict_if_needed(self, cache: "OrderedDict") -> None:
+        while len(cache) > self._MAX_CONTEXT_CACHE:
+            cache.popitem(last=False)
+
+    def _classify_trigger(
+        self,
+        enriched: Dict[str, Any],
+        context_id: Optional[str],
+        context_user_id: Optional[str],
+    ) -> "Tuple[Optional[str], bool, Optional[str]]":
+        """
+        Determines the shared join key, initiator flag, and true origin for
+        one action:
+          trigger_id  : the id every row of this action's fan-out shares
+                        (HA's own context.id — already propagated by HA core
+                        to every event one action produces).
+          is_trigger  : True on exactly the first row seen for this
+                        context_id (the initiating command); False on all
+                        later fan-out (extra service calls / state_changed).
+          true_origin : who/what caused the action — automation:/scene: when
+                        the context belongs to a known automation or scene
+                        run, app:/ha_ui: when a context_user_id is available
+                        (the app's own HA user vs anyone else). None means
+                        origin can't be determined from context alone (e.g. a
+                        physical dock button press has no context_user_id) —
+                        the caller falls back to the hardware-execution-layer
+                        tag (dock:/snap:/ha:<domain>) in that case. True
+                        origin always wins over that hardware tag when known,
+                        since who triggered it matters more than which board
+                        carried it out.
+        """
+        if not context_id:
+            return None, False, None
+
+        ha_event_type = enriched.get("ha_event_type")
+        entity_id = enriched.get("entity_id") or ""
+        domain = enriched.get("domain")
+
+        # Remember the automation/scene that owns this context the moment its
+        # initiating event is seen, so later fan-out rows (the service calls and
+        # state_changed events it causes) can be attributed back to it. Automation
+        # is checked first — if a scene fires *inside* an automation, the shared
+        # context should stay attributed to the automation, not be overwritten by
+        # the scene's own call_service event, which shares the same context id.
+        if ha_event_type == "automation_triggered":
+            self._context_origin[context_id] = f"automation:{entity_id or 'unknown'}"
+            self._evict_if_needed(self._context_origin)
+        elif ha_event_type == "call_service" and domain == "scene" and context_id not in self._context_origin:
+            self._context_origin[context_id] = f"scene:{entity_id or 'unknown'}"
+            self._evict_if_needed(self._context_origin)
+
+        is_trigger = context_id not in self._seen_trigger_contexts
+        if is_trigger:
+            self._seen_trigger_contexts[context_id] = True
+            self._evict_if_needed(self._seen_trigger_contexts)
+
+        true_origin = None
+        if is_trigger:
+            true_origin = self._context_origin.get(context_id)
+            # Only attempt the app:/ha_ui: split once app_ha_user_id has
+            # actually been learned (the app self-reports it via Custom
+            # Storage — see CustomStorageCollector — no config needed). If it
+            # hasn't arrived yet, skip this branch entirely — fail safe.
+            # Without this guard, EVERY context_user_id would fall into the
+            # else branch below and get mislabelled ha_ui:, including
+            # genuine app commands.
+            if not true_origin and context_user_id and self.app_ha_user_id:
+                true_origin = (
+                    "app:command"
+                    if context_user_id == self.app_ha_user_id
+                    else "ha_ui:command"
+                )
+            # else: origin can't be determined (app_ha_user_id unresolved, or
+            # no context_user_id at all — e.g. a physical dock button press).
+            # Caller falls back to actuation_source (dock:/snap:/ha:<domain>).
+
+        return context_id, is_trigger, true_origin
 
     def enrich_event(
         self,
@@ -83,6 +189,11 @@ class EventEnricher:
         """
         enriched = parsed_event.copy()
         entity_id = enriched.get("entity_id")
+        
+        # Track last command timestamp
+        ha_event_type = enriched.get("ha_event_type")
+        if ha_event_type in ("call_service", "matter_event", "zha_event", "deconz_event") and entity_id:
+            self.last_command_ts_cache[entity_id] = enriched.get("timestamp")
         
         # 1. Resolve basic HA registry fields
         device_id: Optional[str] = None
@@ -175,7 +286,11 @@ class EventEnricher:
                 if s_data.get("label"):
                     friendly_name = s_data["label"]
                     
-            enriched["log_source"] = f"snap:{s_id}"
+            # Hardware-execution-layer tag ("which board carried this out") —
+            # kept separate from log_source, which answers "who/what caused it"
+            # (see the trigger-classification step below, which decides the
+            # final log_source and falls back to this when origin is unknown).
+            enriched["actuation_source"] = f"snap:{s_id}"
             if not matter_node_id:
                 matter_node_id = s_data.get("matter_node_id")
         # (Fallback removed: Do not rely on 'snap' in entity_id or friendly_name)
@@ -215,13 +330,17 @@ class EventEnricher:
         if dock_match:
             d_id, d_data = dock_match
             is_dock = True
-            
+            enriched["dock_id"] = d_id
+
             # Prefer room_id from dock metadata if not already resolved by snap_match
             if not room_id:
                 room_id = d_data.get("room_id")
                 
             # If we matched a specific docklet slot, set appropriate device_type and friendly_name
             if matched_docklet:
+                docklet_entity = matched_docklet.get("entity_id")
+                if docklet_entity:
+                    enriched["docklet_id"] = docklet_entity
                 # If event is on the slot itself
                 if matched_docklet.get("entity_id") == entity_id:
                     device_type = "docklet"
@@ -242,7 +361,7 @@ class EventEnricher:
                 if dock_label and dock_label != "not_mapped":
                     friendly_name = dock_label
                     
-            enriched["log_source"] = f"dock:{d_id}"
+            enriched["actuation_source"] = f"dock:{d_id}"
             if not matter_node_id:
                 matter_node_id = d_data.get("matter_node_id")
         # (Fallback removed: Do not rely on 'dock' or 'docklet' in entity_id or friendly_name)
@@ -251,10 +370,10 @@ class EventEnricher:
         if matter_node_id:
             is_matter = True
 
-        # If log source was not set by snap or dock, use HA entity domain
-        if "log_source" not in enriched or enriched["log_source"] == "websocket":
+        # If actuation source was not set by snap or dock, use HA entity domain
+        if "actuation_source" not in enriched:
             domain = enriched.get("domain") or "system"
-            enriched["log_source"] = f"ha:{domain}"
+            enriched["actuation_source"] = f"ha:{domain}"
 
         # 4. Resolve Room and Floor Mappings
         room_name: Optional[str] = None
@@ -307,27 +426,25 @@ class EventEnricher:
             is_snap=is_snap,
             is_dock=is_dock,
             is_matter=is_matter,
-            thread_node_id=matter_node_id # node ID is used as thread_node_id reference
+            thread_node_id=matter_node_id, # node ID is used as thread_node_id reference
+            last_command_ts=self.last_command_ts_cache.get(entity_id) if entity_id else None
         )
         enriched.update(metrics)
 
-        # 6. Apply Use Case Detection
-        raw_event = json.loads(enriched["raw_event_json"])
-        raw_context = raw_event.get("context", {})
-        
-        from processors.use_case_detector import UseCaseDetector
-        detector = UseCaseDetector()
-        use_case = detector.detect_use_case(
-            event_type=enriched["ha_event_type"],
-            event_data=raw_event.get("data", {}),
-            context={
-                "user_id": raw_context.get("user_id"),
-                "parent_id": raw_context.get("parent_id")
-            },
-            is_snap=is_snap,
-            is_dock=is_dock,
-            is_matter=is_matter
+        # 6. Trigger correlation — join key to app_logs + one-row-per-action marking
+        trigger_id, is_trigger, true_origin = self._classify_trigger(
+            enriched,
+            context_id=enriched.get("context_id"),
+            context_user_id=enriched.get("context_user_id"),
         )
-        enriched["use_case"] = use_case
+        enriched["trigger_id"] = trigger_id
+        enriched["is_trigger"] = is_trigger
+        # True origin (who/what caused it) wins over the hardware-execution
+        # layer (which board carried it out) whenever it's known; otherwise
+        # fall back to actuation_source so every row still gets a log_source.
+        enriched["log_source"] = true_origin or enriched.get("actuation_source") or "ha:system"
+
+        # 7. Use case — all hub-side events are observed by definition
+        enriched["use_case"] = "Hub Observed"
 
         return enriched

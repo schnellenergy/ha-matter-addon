@@ -1,8 +1,8 @@
 {
   "name": "HA Data Catcher",
-  "description": "Collects Home Assistant events in real-time, enriches them with Custom Storage metadata, and batches them to Google Sheets.",
+  "description": "Collects Home Assistant events in real-time, enriches them with Custom Storage metadata, and streams them to Firestore and BigQuery.",
   "version": "1.0.0",
-  "slug": "ha_data_collector",
+  "slug": "ha_data_catcher",
   "init": false,
   "startup": "services",
   "boot": "auto",
@@ -16,14 +16,12 @@
   "hassio_api": true,
   "hassio_role": "default",
   "options": {
-    "apps_script_url": "",
     "hub_id": "",
     "custom_storage_url": "http://homeassistant:8100",
     "ha_token": "",
     "debug": false
   },
   "schema": {
-    "apps_script_url": "str?",
     "hub_id": "str?",
     "custom_storage_url": "str?",
     "ha_token": "password?",
