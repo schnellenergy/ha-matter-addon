@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -80,13 +81,16 @@ class EventParser:
         event_data = raw_event.get("data", {})
         context = raw_event.get("context", {})
         time_fired = raw_event.get("time_fired")
-        
+
         # Parse timestamp
         dt_local = self.parse_iso_timestamp(time_fired)
-        
+
+        # Unique id for this event record — used as Firestore doc id and join key
+        event_id = str(uuid.uuid4())
+
         # Extract context
-        context_id = context.get("id", "")
-        context_user_id = context.get("user_id", "")
+        context_id = context.get("id") or None
+        context_user_id = context.get("user_id") or None
         
         # Initialize default fields
         entity_id: Optional[str] = None
@@ -223,6 +227,7 @@ class EventParser:
 
         # Build baseline parsed dictionary
         return {
+            "event_id": event_id,
             "timestamp": dt_local.isoformat(),
             "date": dt_local.strftime("%Y-%m-%d"),
             "time": dt_local.strftime("%H:%M:%S"),
@@ -239,6 +244,8 @@ class EventParser:
             "color_name": color_name,
             "action": action,
             "origin": origin,
+            "context_id": context_id,
+            "context_user_id": context_user_id,
             "attributes": json.dumps(attributes) if attributes else None,
             "raw_event_json": json.dumps(raw_event),
             "device_id": device_id

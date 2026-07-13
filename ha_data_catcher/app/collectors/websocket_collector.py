@@ -128,7 +128,7 @@ class HomeAssistantWebsocketCollector:
                 floors=floor_map
             )
             logger.info(f"HA registries loaded. {len(entity_map)} entities, {len(device_map)} devices cached.")
-            
+
         except Exception as e:
             logger.error(f"Error fetching HA registries: {e}. Enrichment will fall back to basic details.")
 

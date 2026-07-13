@@ -15,7 +15,13 @@ class CustomStorageCollector:
         self.rooms: Dict[str, Dict[str, Any]] = {}
         self.snaps: Dict[str, Dict[str, Any]] = {}
         self.docks: Dict[str, Dict[str, Any]] = {}
-        
+
+        # The app's own HA user id, self-reported into Custom Storage the
+        # first time it captures its own context.user_id off a command
+        # response (see custom_data_service.dart storeData('app_ha_user', ...)).
+        # None until the app has reported at least once.
+        self.app_ha_user_id: Optional[str] = None
+
         # Thread/Async lock
         self.lock = asyncio.Lock()
         
@@ -84,8 +90,42 @@ class CustomStorageCollector:
             except Exception as e:
                 logger.warning(f"Error connecting to Custom Storage device_setup: {e}")
                 success = False
-                
+
+            # 3. Fetch app identity — the app's self-reported HA user id.
+            # Best-effort and non-fatal: until the app has reported at least
+            # once, this 404s/returns nothing, which is expected, not an
+            # error — app:/ha_ui: classification just stays off until then.
+            identity_url = f"{self.base_url}/api/data/app_identity"
+            try:
+                async with session.get(identity_url, headers=self.get_headers(), timeout=10) as resp:
+                    if resp.status == 200:
+                        body = await resp.json()
+                        if body.get("success"):
+                            val = body.get("value") or body.get("data")
+                            if isinstance(val, str):
+                                val = json.loads(val)
+                            if isinstance(val, dict):
+                                await self._parse_app_identity(val)
+            except Exception as e:
+                logger.debug(f"No app identity available yet from Custom Storage: {e}")
+
         return success
+
+    async def _parse_app_identity(self, val: Dict[str, Any]):
+        """Parses the app's self-reported HA user id. Tolerates either the
+        direct shape {'user_id': ...} or one level of key-wrapping, in case
+        Custom Storage returns a whole-category dump keyed by entry name."""
+        candidate = val.get("user_id")
+        if not candidate:
+            for v in val.values():
+                if isinstance(v, dict) and v.get("user_id"):
+                    candidate = v["user_id"]
+                    break
+        if candidate:
+            async with self.lock:
+                if self.app_ha_user_id != candidate:
+                    logger.info(f"Learned app's HA user id from Custom Storage: {candidate}")
+                self.app_ha_user_id = candidate
 
     async def _parse_home_setup(self, home_setup: Dict[str, Any]):
         """Parses the home structure to populate room and floor mappings."""
@@ -131,5 +171,6 @@ class CustomStorageCollector:
             return {
                 "rooms": self.rooms.copy(),
                 "snaps": self.snaps.copy(),
-                "docks": self.docks.copy()
+                "docks": self.docks.copy(),
+                "app_ha_user_id": self.app_ha_user_id,
             }

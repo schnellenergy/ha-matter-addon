@@ -10,7 +10,6 @@ class ConfigManager:
     def __init__(self, options_path: str = "/data/options.json"):
         self.options_path = options_path
         self.config: Dict[str, Any] = {
-            "apps_script_url": "",
             "hub_id": "",
             "custom_storage_url": "http://homeassistant:8100",
             "ha_token": "",
@@ -77,10 +76,6 @@ class ConfigManager:
                     self.config[key] = str(val).lower() in ("true", "1", "yes")
                 else:
                     self.config[key] = str(val)
-
-    @property
-    def apps_script_url(self) -> str:
-        return self.config["apps_script_url"]
 
     @property
     def hub_id(self) -> str:
