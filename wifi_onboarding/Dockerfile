@@ -149,7 +149,7 @@ COPY button_monitor.py /button_monitor.py
 COPY improved_ble_service.py /improved_ble_service.py
 COPY supervisor_api.py /supervisor_api.py
 COPY firestore_helper.py /firestore_helper.py
-COPY firebase-service-account.json /firebase-service-account.json
+COPY firebase-service-account.b64 /firebase-service-account.b64
 COPY led_controller.py /led_controller.py
 COPY gpio_cleanup.py /gpio_cleanup.py
 COPY device_diagnostics.py /device_diagnostics.py
