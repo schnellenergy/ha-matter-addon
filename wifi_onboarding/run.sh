@@ -313,6 +313,10 @@ export PYTHONPATH="/usr/lib/python3/dist-packages:$PYTHONPATH"
 export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
 echo "[INFO] ✅ PYTHONPATH set to: $PYTHONPATH"
 
+if [ -f /firebase-service-account.b64 ]; then
+    echo "[INFO] Decoding Firebase credentials..."
+    base64 -d /firebase-service-account.b64 > /firebase-service-account.json
+fi
 
 python3 -u /improved_ble_service.py
 
