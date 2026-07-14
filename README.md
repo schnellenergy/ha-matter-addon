@@ -7,8 +7,8 @@ This repository contains a collection of custom Home Assistant add-ons developed
 ### 1. HA Data Catcher (`ha_data_catcher`)
 Collects Home Assistant events in real-time, enriches them with Custom Storage metadata, and streams them securely to Firestore and BigQuery for analytics.
 
-### 2. WiFi Onboarding (`wifi_onboarding`)
-SMASH Hub BLE WiFi Onboarding Add-on. Handles initial device setup and onboarding over Bluetooth Low Energy.
+### 2. Wi-Fi Onboarding (`wifi_onboarding`)
+SMASH Wi-Fi Onboarding Add-on. Handles initial device setup and onboarding over Bluetooth Low Energy.
 
 ### 3. Custom Data Storage (`custom_data_storage`)
 Provides SQLite-based storage for handling large amounts of data efficiently. Store and access custom values for the home automation app via REST API and WebSocket.

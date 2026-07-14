@@ -1,8 +1,8 @@
 {
-  "name": "SMASH Hub BLE WiFi Onboarding",
+  "name": "SMASH Wi-Fi Onboarding",
   "version": "1.0.0",
-  "slug": "smash_ble_wifi_onboarding",
-  "description": "BLE-based WiFi onboarding for SMASH Home Hub with factory reset support",
+  "slug": "smash_wifi_onboarding",
+  "description": "Bluetooth-based Wi-Fi onboarding for SMASH with factory reset support",
   "icon": "mdi:wifi-cog",
   "url": "https://github.com/schnell-home/smash-hub-onboarding",
   "arch": [
