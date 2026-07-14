@@ -77,6 +77,7 @@ class KernelAdvertiser:
     HCI_CHANNEL_CONTROL = 3
 
     MGMT_OP_READ_INFO = 0x0004
+    MGMT_OP_SET_POWERED = 0x0005
     MGMT_OP_ADD_ADVERTISING = 0x003E
     MGMT_OP_REMOVE_ADVERTISING = 0x003F
     MGMT_EV_CMD_COMPLETE = 0x0001
@@ -176,6 +177,15 @@ class KernelAdvertiser:
     def remove_advertisement(self):
         self._mgmt_request(self.MGMT_OP_REMOVE_ADVERTISING,
                            struct.pack('<B', self.instance))
+
+    def set_powered(self, on):
+        """Power the adapter off/on at the kernel level. Resets the radio's
+        busy state; bluetoothd re-applies its settings (name, etc.) on
+        power-up and scan clients reconnect on their own."""
+        status, _ = self._mgmt_request(self.MGMT_OP_SET_POWERED,
+                                       struct.pack('<B', 1 if on else 0),
+                                       timeout=8.0)
+        return status == 0
 
     @staticmethod
     def _uuid128_ad(uuid_str):
@@ -1124,6 +1134,7 @@ class BLEGATTService:
         self.advertising_via_kernel = False
         self.kernel_adv = KernelAdvertiser(index=0, instance=1)
         self._watchdog_started = False
+        self._engage_failures = 0
         
     def _get_device_name(self) -> str:
         """Get device name from MAC address"""
@@ -1243,13 +1254,36 @@ class BLEGATTService:
         application stays registered over D-Bus and serves connections as
         usual; only the advertisement itself is kernel-managed."""
         self.kernel_adv.remove_advertisement()  # clear stale instance, best-effort
+        if self._kernel_add_and_verify():
+            return True
+        # The radio can refuse to engage while an active LE scan (e.g. the
+        # HA Bluetooth integration) holds it. After two plain attempts,
+        # power-cycle the adapter and claim the radio before the scanner
+        # restarts - deterministic, and scan+advertise coexist afterwards.
+        self._engage_failures += 1
+        if self._engage_failures < 2:
+            logger.warning("⚠️ Kernel instance accepted but radio not engaged yet - will retry")
+            return False
+        logger.warning("🔄 Radio held by an active scan - power-cycling adapter to claim it")
+        self.kernel_adv.remove_advertisement()
+        self.kernel_adv.set_powered(False)
+        time.sleep(1.0)
+        self.kernel_adv.set_powered(True)
+        time.sleep(1.0)
+        if self._kernel_add_and_verify():
+            return True
+        logger.warning("⚠️ Radio still not engaged after adapter power-cycle - will retry")
+        return False
+
+    def _kernel_add_and_verify(self) -> bool:
+        """One add-advertisement attempt, confirmed against the radio."""
         if not self.kernel_adv.add_advertisement(self.WIFI_SERVICE_UUID):
             return False
         time.sleep(0.5)
         if self.kernel_adv.is_advertising() is False:
-            logger.warning("⚠️ Kernel instance accepted but radio not engaged yet - will retry")
             self.kernel_adv.remove_advertisement()
             return False
+        self._engage_failures = 0
         self.is_advertising = True
         self.advertising_via_kernel = True
         self.advertising_stopped_after_wifi = False
