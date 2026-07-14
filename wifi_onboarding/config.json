@@ -1,6 +1,6 @@
 {
   "name": "SMASH Wi-Fi Onboarding",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "slug": "smash_wifi_onboarding",
   "description": "Bluetooth-based Wi-Fi onboarding for SMASH with factory reset support",
   "icon": "mdi:wifi-cog",

@@ -78,6 +78,7 @@ class KernelAdvertiser:
 
     MGMT_OP_READ_INFO = 0x0004
     MGMT_OP_SET_POWERED = 0x0005
+    MGMT_OP_READ_ADV_FEATURES = 0x003D
     MGMT_OP_ADD_ADVERTISING = 0x003E
     MGMT_OP_REMOVE_ADVERTISING = 0x003F
     MGMT_EV_CMD_COMPLETE = 0x0001
@@ -153,11 +154,27 @@ class KernelAdvertiser:
         return None
 
     def is_advertising(self):
-        """True/False from the radio's actual state; None if unreadable."""
+        """True/False from the ADVERTISING settings bit; None if unreadable.
+        NOTE: this bit only reflects the *global* advertising toggle - it
+        stays 0 for instance-based advertising, so it must never be used
+        alone to conclude the radio is silent (see instance_active)."""
         current = self.current_settings()
         if current is None:
             return None
         return bool(current & self.SETTING_ADVERTISING)
+
+    def instance_active(self):
+        """True if our advertising instance is currently held by the kernel.
+        This is the authoritative check for instance-based advertising:
+        the kernel drops the instance when chip programming fails, so
+        presence means the radio accepted it. None if unreadable."""
+        status, params = self._mgmt_request(self.MGMT_OP_READ_ADV_FEATURES)
+        if status != 0 or len(params) < 8:
+            return None
+        # supported_flags(4) max_adv_data_len(1) max_scan_rsp_len(1)
+        # max_instances(1) num_instances(1) instance_ids[]
+        num = params[7]
+        return self.instance in params[8:8 + num]
 
     def add_advertisement(self, service_uuid):
         """Register a connectable, general-discoverable instance carrying
@@ -1276,13 +1293,15 @@ class BLEGATTService:
         return False
 
     def _kernel_add_and_verify(self) -> bool:
-        """One add-advertisement attempt, confirmed against the radio."""
+        """One add-advertisement attempt, confirmed against the radio.
+        Verification = the kernel still holds our instance (it drops the
+        instance when chip programming fails). The ADVERTISING settings
+        bit must NOT be used here - it ignores instance advertising."""
         if not self.kernel_adv.add_advertisement(self.WIFI_SERVICE_UUID):
             return False
         time.sleep(0.5)
-        if self.kernel_adv.is_advertising() is False:
-            self.kernel_adv.remove_advertisement()
-            return False
+        if self.kernel_adv.instance_active() is False:
+            return False  # kernel dropped it - chip refused; nothing to clean up
         self._engage_failures = 0
         self.is_advertising = True
         self.advertising_via_kernel = True
@@ -1298,8 +1317,13 @@ class BLEGATTService:
         try:
             if self.advertising_stopped_after_wifi:
                 return True
-            radio_on = self.kernel_adv.is_advertising()
-            if radio_on is False:
+            # Advertising counts as lost only when BOTH signals say so:
+            # no kernel-held instance AND the global advertising bit off
+            # (the bit alone ignores instance ads; instance check alone
+            # would miss bluetoothd-owned global advertising).
+            instance_on = self.kernel_adv.instance_active()
+            global_on = self.kernel_adv.is_advertising()
+            if instance_on is False and global_on is False:
                 if self.is_advertising:
                     logger.warning("🔄 Advertising dropped - re-engaging")
                 self.is_advertising = False
