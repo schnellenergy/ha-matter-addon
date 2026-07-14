@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bluetooth \
     libbluetooth-dev \
     bluez-tools \
+    bluez-test-tools \
     python3-dbus \
     python3-gi \
     gir1.2-glib-2.0 \

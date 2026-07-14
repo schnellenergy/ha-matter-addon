@@ -993,6 +993,7 @@ class BLEGATTService:
         self.current_status = {"status": "ready", "message": "Ready for WiFi configuration"}
         self.is_advertising = False
         self.advertising_stopped_after_wifi = False
+        self.advertising_via_btmgmt = False
         
     def _get_device_name(self) -> str:
         """Get device name from MAC address"""
@@ -1010,6 +1011,15 @@ class BLEGATTService:
     def stop_advertising(self):
         """Stop BLE advertising after WiFi connection"""
         try:
+            if self.is_advertising and getattr(self, 'advertising_via_btmgmt', False):
+                logger.info("📴 STOPPING BLE ADVERTISING (btmgmt): WiFi connected - no longer discoverable")
+                self._btmgmt_remove_adv()
+                self.is_advertising = False
+                self.advertising_via_btmgmt = False
+                self.advertising_stopped_after_wifi = True
+                logger.info("✅ BLE advertising stopped - device no longer discoverable")
+                return
+
             if self.advertisement_manager and self.is_advertising:
                 logger.info("📴 STOPPING BLE ADVERTISING: WiFi connected - no longer discoverable")
 
@@ -1067,7 +1077,7 @@ class BLEGATTService:
                         self.advertisement_manager.get_path(),
                         {},
                         reply_handler=lambda: self._advertising_registered(),
-                        error_handler=lambda error: logger.error(f"❌ Advertisement registration failed: {error}")
+                        error_handler=lambda error: self._on_advertise_failure(error)
                     )
                 else:
                     logger.warning("⚠️  Could not find Bluetooth adapter or advertisement manager not initialized")
@@ -1077,9 +1087,61 @@ class BLEGATTService:
 
     def _advertising_registered(self):
         """Callback when advertising is successfully registered"""
-        logger.info("✅ BLE advertising started - device discoverable as 'SMASH-Hub'")
+        logger.info(f"✅ BLE advertising started - device discoverable as '{self.device_name}'")
         self.is_advertising = True
+        self.advertising_via_btmgmt = False
         self.advertising_stopped_after_wifi = False
+
+    def _on_advertise_failure(self, error):
+        """D-Bus advertisement registration failed. Known cause: HAOS 18.1
+        (RPi kernel 6.18.34) strictly validates MGMT_OP_ADD_EXT_ADV_DATA and
+        rejects BlueZ 5.85's oversized command, so every D-Bus registration
+        fails. Fall back to btmgmt, whose legacy command has the exact
+        length; if that also fails, keep retrying via the GLib main loop."""
+        logger.error(f"❌ Advertisement registration failed: {error}")
+        if self._btmgmt_advertise():
+            return
+        logger.warning("⚠️  Advertisement fallback failed too - retrying in 15s")
+        GLib.timeout_add_seconds(15, self._retry_advertising)
+
+    def _retry_advertising(self):
+        if not self.is_advertising and not self.advertising_stopped_after_wifi:
+            self.start_advertising()
+        return False  # one-shot timer; failure path schedules the next retry
+
+    def _btmgmt_advertise(self) -> bool:
+        """Register the advertisement through the kernel mgmt API (btmgmt),
+        bypassing bluetoothd's broken Add Extended Advertising Data path.
+        The GATT application stays registered over D-Bus and still serves
+        connections; only the advertisement itself is kernel-managed."""
+        try:
+            logger.info("🔧 Falling back to btmgmt advertising (kernel mgmt API)...")
+            # Clear any stale instance from a previous run, then add ours:
+            # -c connectable, -g general-discoverable, -n local name in scan rsp
+            subprocess.run(['btmgmt', '--index', '0', 'rm-adv', '1'],
+                           capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ['btmgmt', '--index', '0', 'add-adv',
+                 '-u', self.WIFI_SERVICE_UUID, '-c', '-g', '-n', '1'],
+                capture_output=True, text=True, timeout=10)
+            output = ((result.stdout or '') + (result.stderr or '')).strip()
+            if result.returncode == 0 and 'failed' not in output.lower():
+                self.is_advertising = True
+                self.advertising_via_btmgmt = True
+                self.advertising_stopped_after_wifi = False
+                logger.info(f"✅ BLE advertising started via btmgmt - device discoverable as '{self.device_name}'")
+                return True
+            logger.warning(f"⚠️  btmgmt add-adv failed: {output}")
+        except Exception as e:
+            logger.warning(f"⚠️  btmgmt fallback error: {e}")
+        return False
+
+    def _btmgmt_remove_adv(self):
+        try:
+            subprocess.run(['btmgmt', '--index', '0', 'rm-adv', '1'],
+                           capture_output=True, text=True, timeout=10)
+        except Exception as e:
+            logger.warning(f"⚠️  btmgmt rm-adv error: {e}")
 
     def restart_advertising_after_factory_reset(self):
         """Restart BLE advertising after factory reset"""
@@ -1155,12 +1217,12 @@ class BLEGATTService:
                 self.advertisement_manager.get_path(),
                 {},
                 reply_handler=lambda: self._advertising_registered(),
-                error_handler=lambda error: logger.error(f"❌ Advertisement registration failed: {error}")
+                error_handler=lambda error: self._on_advertise_failure(error)
             )
-            
+
             # Start the GLib main loop
             logger.info("🔄 Starting BLE service main loop...")
-            logger.info(f"📱 Device '{self.device_name}' is now discoverable!")
+            logger.info(f"📱 Device name: '{self.device_name}' (advertising result is logged when BlueZ replies)")
             logger.info(f"🔧 Service UUID: {self.WIFI_SERVICE_UUID}")
             
             mainloop = GLib.MainLoop()
@@ -2006,8 +2068,19 @@ def main():
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGUSR1, wifi_reset_handler)  # WiFi reset signal
-    signal.signal(signal.SIGUSR2, factory_reset_handler)  # Factory reset signal
+    # USR1/USR2 must go through GLib: plain signal.signal handlers never run
+    # while the main thread is blocked inside GLib.MainLoop.run(), so the
+    # factory-reset signal from button_monitor would be deferred forever.
+    def _attach_glib_signal(signum, handler):
+        try:
+            GLib.unix_signal_add(GLib.PRIORITY_HIGH, signum,
+                                 lambda *args: (handler(signum, None), True)[1])
+        except Exception as e:
+            logger.warning(f"⚠️ GLib signal hookup failed for {signum}, using signal.signal: {e}")
+            signal.signal(signum, handler)
+
+    _attach_glib_signal(signal.SIGUSR1, wifi_reset_handler)  # WiFi reset signal
+    _attach_glib_signal(signal.SIGUSR2, factory_reset_handler)  # Factory reset signal
     
     # Start background network monitoring for LED updates and Ethernet IP persistence
     def network_monitor():
