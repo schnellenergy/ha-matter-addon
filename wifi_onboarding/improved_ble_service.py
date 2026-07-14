@@ -13,6 +13,9 @@ import json
 import re
 import threading
 import traceback
+import ctypes
+import socket
+import struct
 from typing import Dict, List, Optional
 
 # Configure logging
@@ -55,6 +58,131 @@ except ImportError as e1:
     except ImportError as e2:
         logger.error(f"❌ Failed to import D-Bus libraries (system: {e1}, pip: {e2})")
         DBUS_AVAILABLE = False
+
+class KernelAdvertiser:
+    """BLE advertising through the kernel's Bluetooth Management (mgmt) API.
+
+    This is the same interface bluetoothd uses internally. Driving it
+    directly keeps advertising working even when bluetoothd's own D-Bus
+    advertising path is broken (HAOS 18.1 ships BlueZ 5.85 whose
+    Add Extended Advertising Data command is rejected by kernel 6.18.34).
+    Instances registered here are kernel-owned: they outlive this process
+    and are re-programmed by the kernel after adapter power cycles.
+    Requires CAP_NET_ADMIN (the add-on runs privileged).
+    """
+
+    AF_BLUETOOTH = 31
+    BTPROTO_HCI = 1
+    HCI_DEV_NONE = 0xFFFF
+    HCI_CHANNEL_CONTROL = 3
+
+    MGMT_OP_READ_INFO = 0x0004
+    MGMT_OP_ADD_ADVERTISING = 0x003E
+    MGMT_OP_REMOVE_ADVERTISING = 0x003F
+    MGMT_EV_CMD_COMPLETE = 0x0001
+    MGMT_EV_CMD_STATUS = 0x0002
+    SETTING_ADVERTISING = 1 << 10
+
+    ADV_FLAG_CONNECTABLE = 1 << 0
+    ADV_FLAG_GENERAL_DISCOV = 1 << 1
+    ADV_FLAG_LOCAL_NAME_SCAN_RSP = 1 << 6
+
+    def __init__(self, index=0, instance=1):
+        self.index = index
+        self.instance = instance
+
+    def _mgmt_request(self, opcode, params=b'', timeout=6.0):
+        """Send one mgmt command, wait for its Command Complete/Status.
+        Returns (status, return_params); status is None on socket failure
+        or timeout. Opens a fresh control socket per call - kernel-owned
+        advertising instances persist after the socket closes."""
+        try:
+            sock = socket.socket(self.AF_BLUETOOTH, socket.SOCK_RAW, self.BTPROTO_HCI)
+        except OSError as e:
+            logger.warning(f"⚠️ mgmt socket unavailable: {e}")
+            return None, b''
+        try:
+            # Python's socket module can't bind an HCI control channel,
+            # so bind via libc with a raw sockaddr_hci.
+            libc = ctypes.CDLL(None, use_errno=True)
+            addr = struct.pack('<HHH', self.AF_BLUETOOTH,
+                               self.HCI_DEV_NONE, self.HCI_CHANNEL_CONTROL)
+            if libc.bind(sock.fileno(), addr, len(addr)) != 0:
+                err = ctypes.get_errno()
+                logger.warning(f"⚠️ mgmt bind failed: {os.strerror(err)}")
+                return None, b''
+            sock.settimeout(1.0)
+            sock.send(struct.pack('<HHH', opcode, self.index, len(params)) + params)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    pkt = sock.recv(1024)
+                except socket.timeout:
+                    continue
+                if len(pkt) < 6:
+                    continue
+                event, index, plen = struct.unpack_from('<HHH', pkt, 0)
+                if event not in (self.MGMT_EV_CMD_COMPLETE, self.MGMT_EV_CMD_STATUS):
+                    continue  # unsolicited event (device found, etc.)
+                payload = pkt[6:6 + plen]
+                if index != self.index or len(payload) < 3:
+                    continue
+                ev_opcode, status = struct.unpack_from('<HB', payload, 0)
+                if ev_opcode != opcode:
+                    continue  # completion of someone else's command
+                if event == self.MGMT_EV_CMD_COMPLETE:
+                    return status, payload[3:]
+                return status, b''
+            logger.warning(f"⚠️ mgmt opcode 0x{opcode:04x}: no reply within {timeout}s")
+            return None, b''
+        except Exception as e:
+            logger.warning(f"⚠️ mgmt request error: {e}")
+            return None, b''
+        finally:
+            sock.close()
+
+    def current_settings(self):
+        """Adapter's current settings bitfield, or None if unreadable."""
+        status, params = self._mgmt_request(self.MGMT_OP_READ_INFO)
+        if status == 0 and len(params) >= 17:
+            # return params: bdaddr(6) version(1) manufacturer(2)
+            #                supported_settings(4) current_settings(4) ...
+            (current,) = struct.unpack_from('<I', params, 13)
+            return current
+        return None
+
+    def is_advertising(self):
+        """True/False from the radio's actual state; None if unreadable."""
+        current = self.current_settings()
+        if current is None:
+            return None
+        return bool(current & self.SETTING_ADVERTISING)
+
+    def add_advertisement(self, service_uuid):
+        """Register a connectable, general-discoverable instance carrying
+        the 128-bit service UUID; the kernel appends the adapter's local
+        name to the scan response. Returns True when the kernel accepted it."""
+        adv_data = self._uuid128_ad(service_uuid)
+        flags = (self.ADV_FLAG_CONNECTABLE | self.ADV_FLAG_GENERAL_DISCOV
+                 | self.ADV_FLAG_LOCAL_NAME_SCAN_RSP)
+        cp = struct.pack('<BIHHBB', self.instance, flags, 0, 0,
+                         len(adv_data), 0) + adv_data
+        status, _ = self._mgmt_request(self.MGMT_OP_ADD_ADVERTISING, cp, timeout=10.0)
+        if status == 0:
+            return True
+        logger.warning(f"⚠️ kernel Add Advertising failed (status={status})")
+        return False
+
+    def remove_advertisement(self):
+        self._mgmt_request(self.MGMT_OP_REMOVE_ADVERTISING,
+                           struct.pack('<B', self.instance))
+
+    @staticmethod
+    def _uuid128_ad(uuid_str):
+        """AD structure: Complete List of 128-bit Service UUIDs (0x07)."""
+        raw = bytes.fromhex(uuid_str.replace('-', ''))[::-1]  # little-endian
+        return bytes([len(raw) + 1, 0x07]) + raw
+
 
 def get_mac_address():
     """Get the MAC address of the Raspberry Pi's primary network interface"""
@@ -993,7 +1121,9 @@ class BLEGATTService:
         self.current_status = {"status": "ready", "message": "Ready for WiFi configuration"}
         self.is_advertising = False
         self.advertising_stopped_after_wifi = False
-        self.advertising_via_btmgmt = False
+        self.advertising_via_kernel = False
+        self.kernel_adv = KernelAdvertiser(index=0, instance=1)
+        self._watchdog_started = False
         
     def _get_device_name(self) -> str:
         """Get device name from MAC address"""
@@ -1011,11 +1141,11 @@ class BLEGATTService:
     def stop_advertising(self):
         """Stop BLE advertising after WiFi connection"""
         try:
-            if self.is_advertising and getattr(self, 'advertising_via_btmgmt', False):
-                logger.info("📴 STOPPING BLE ADVERTISING (btmgmt): WiFi connected - no longer discoverable")
-                self._btmgmt_remove_adv()
+            if self.is_advertising and getattr(self, 'advertising_via_kernel', False):
+                logger.info("📴 STOPPING BLE ADVERTISING: WiFi connected - no longer discoverable")
+                self.kernel_adv.remove_advertisement()
                 self.is_advertising = False
-                self.advertising_via_btmgmt = False
+                self.advertising_via_kernel = False
                 self.advertising_stopped_after_wifi = True
                 logger.info("✅ BLE advertising stopped - device no longer discoverable")
                 return
@@ -1089,19 +1219,18 @@ class BLEGATTService:
         """Callback when advertising is successfully registered"""
         logger.info(f"✅ BLE advertising started - device discoverable as '{self.device_name}'")
         self.is_advertising = True
-        self.advertising_via_btmgmt = False
+        self.advertising_via_kernel = False
         self.advertising_stopped_after_wifi = False
 
     def _on_advertise_failure(self, error):
-        """D-Bus advertisement registration failed. Known cause: HAOS 18.1
-        (RPi kernel 6.18.34) strictly validates MGMT_OP_ADD_EXT_ADV_DATA and
-        rejects BlueZ 5.85's oversized command, so every D-Bus registration
-        fails. Fall back to btmgmt, whose legacy command has the exact
-        length; if that also fails, keep retrying via the GLib main loop."""
-        logger.error(f"❌ Advertisement registration failed: {error}")
-        if self._btmgmt_advertise():
+        """bluetoothd's D-Bus advertising path failed. Known cause: HAOS
+        18.1 (RPi kernel 6.18.34) rejects BlueZ 5.85's oversized
+        MGMT_OP_ADD_EXT_ADV_DATA command. Engage the kernel advertising
+        engine directly; if even that fails, keep retrying on the main loop."""
+        logger.warning(f"⚙️ bluetoothd advertising path unavailable ({error}) - using kernel engine")
+        if self._kernel_advertise():
             return
-        logger.warning("⚠️  Advertisement fallback failed too - retrying in 15s")
+        logger.warning("⚠️ Advertising not up yet - retrying in 15s")
         GLib.timeout_add_seconds(15, self._retry_advertising)
 
     def _retry_advertising(self):
@@ -1109,51 +1238,41 @@ class BLEGATTService:
             self.start_advertising()
         return False  # one-shot timer; failure path schedules the next retry
 
-    def _btmgmt_advertise(self) -> bool:
-        """Register the advertisement through the kernel mgmt API (btmgmt),
-        bypassing bluetoothd's broken Add Extended Advertising Data path.
-        The GATT application stays registered over D-Bus and still serves
-        connections; only the advertisement itself is kernel-managed."""
-        try:
-            logger.info("🔧 Falling back to btmgmt advertising (kernel mgmt API)...")
-            # Clear any stale instance from a previous run, then add ours:
-            # -c connectable, -g general-discoverable, -n local name in scan rsp
-            subprocess.run(['btmgmt', '--index', '0', 'rm-adv', '1'],
-                           capture_output=True, text=True, timeout=10)
-            result = subprocess.run(
-                ['btmgmt', '--index', '0', 'add-adv',
-                 '-u', self.WIFI_SERVICE_UUID, '-c', '-g', '-n', '1'],
-                capture_output=True, text=True, timeout=10)
-            output = ((result.stdout or '') + (result.stderr or '')).strip()
-            if result.returncode == 0 and 'failed' not in output.lower():
-                # An accepted instance is not enough - confirm the radio
-                # actually engaged (kernel reports 'advertising' in the
-                # adapter's current settings once the chip is broadcasting).
-                time.sleep(1)
-                info = subprocess.run(['btmgmt', '--index', '0', 'info'],
-                                      capture_output=True, text=True, timeout=10)
-                settings_line = next((l for l in (info.stdout or '').splitlines()
-                                      if 'current settings' in l), '')
-                if 'advertising' in settings_line:
-                    self.is_advertising = True
-                    self.advertising_via_btmgmt = True
-                    self.advertising_stopped_after_wifi = False
-                    logger.info(f"✅ BLE advertising started via btmgmt - device discoverable as '{self.device_name}'")
-                    return True
-                logger.warning("⚠️  btmgmt instance accepted but radio not advertising yet - will retry")
-                self._btmgmt_remove_adv()
-                return False
-            logger.warning(f"⚠️  btmgmt add-adv failed: {output}")
-        except Exception as e:
-            logger.warning(f"⚠️  btmgmt fallback error: {e}")
-        return False
+    def _kernel_advertise(self) -> bool:
+        """Advertise via the kernel mgmt API (KernelAdvertiser). The GATT
+        application stays registered over D-Bus and serves connections as
+        usual; only the advertisement itself is kernel-managed."""
+        self.kernel_adv.remove_advertisement()  # clear stale instance, best-effort
+        if not self.kernel_adv.add_advertisement(self.WIFI_SERVICE_UUID):
+            return False
+        time.sleep(0.5)
+        if self.kernel_adv.is_advertising() is False:
+            logger.warning("⚠️ Kernel instance accepted but radio not engaged yet - will retry")
+            self.kernel_adv.remove_advertisement()
+            return False
+        self.is_advertising = True
+        self.advertising_via_kernel = True
+        self.advertising_stopped_after_wifi = False
+        logger.info(f"✅ BLE advertising started - device discoverable as '{self.device_name}'")
+        return True
 
-    def _btmgmt_remove_adv(self):
+    def _advertising_watchdog(self):
+        """Recurring guard: if the hub should be discoverable but the radio
+        stopped advertising (adapter power cycle, bluetoothd restart, boot
+        race), re-engage automatically. Runs every 30s for the lifetime of
+        the service; intentional stops (after Wi-Fi setup) are respected."""
         try:
-            subprocess.run(['btmgmt', '--index', '0', 'rm-adv', '1'],
-                           capture_output=True, text=True, timeout=10)
+            if self.advertising_stopped_after_wifi:
+                return True
+            radio_on = self.kernel_adv.is_advertising()
+            if radio_on is False:
+                if self.is_advertising:
+                    logger.warning("🔄 Advertising dropped - re-engaging")
+                self.is_advertising = False
+                self.start_advertising()
         except Exception as e:
-            logger.warning(f"⚠️  btmgmt rm-adv error: {e}")
+            logger.debug(f"watchdog error: {e}")
+        return True  # keep the timer alive
 
     def restart_advertising_after_factory_reset(self):
         """Restart BLE advertising after factory reset"""
@@ -1231,6 +1350,12 @@ class BLEGATTService:
                 reply_handler=lambda: self._advertising_registered(),
                 error_handler=lambda error: self._on_advertise_failure(error)
             )
+
+            # Advertising watchdog: guarantees the hub stays discoverable
+            # whenever it should be, whatever happens to the adapter.
+            if not self._watchdog_started:
+                GLib.timeout_add_seconds(30, self._advertising_watchdog)
+                self._watchdog_started = True
 
             # Start the GLib main loop
             logger.info("🔄 Starting BLE service main loop...")
