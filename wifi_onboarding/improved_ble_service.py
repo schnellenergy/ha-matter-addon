@@ -1126,11 +1126,23 @@ class BLEGATTService:
                 capture_output=True, text=True, timeout=10)
             output = ((result.stdout or '') + (result.stderr or '')).strip()
             if result.returncode == 0 and 'failed' not in output.lower():
-                self.is_advertising = True
-                self.advertising_via_btmgmt = True
-                self.advertising_stopped_after_wifi = False
-                logger.info(f"✅ BLE advertising started via btmgmt - device discoverable as '{self.device_name}'")
-                return True
+                # An accepted instance is not enough - confirm the radio
+                # actually engaged (kernel reports 'advertising' in the
+                # adapter's current settings once the chip is broadcasting).
+                time.sleep(1)
+                info = subprocess.run(['btmgmt', '--index', '0', 'info'],
+                                      capture_output=True, text=True, timeout=10)
+                settings_line = next((l for l in (info.stdout or '').splitlines()
+                                      if 'current settings' in l), '')
+                if 'advertising' in settings_line:
+                    self.is_advertising = True
+                    self.advertising_via_btmgmt = True
+                    self.advertising_stopped_after_wifi = False
+                    logger.info(f"✅ BLE advertising started via btmgmt - device discoverable as '{self.device_name}'")
+                    return True
+                logger.warning("⚠️  btmgmt instance accepted but radio not advertising yet - will retry")
+                self._btmgmt_remove_adv()
+                return False
             logger.warning(f"⚠️  btmgmt add-adv failed: {output}")
         except Exception as e:
             logger.warning(f"⚠️  btmgmt fallback error: {e}")
