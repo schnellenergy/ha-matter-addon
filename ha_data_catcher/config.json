@@ -19,12 +19,14 @@
     "hub_id": "",
     "custom_storage_url": "http://homeassistant:8100",
     "ha_token": "",
-    "debug": false
+    "debug": false,
+    "google_webhook_url": ""
   },
   "schema": {
     "hub_id": "str?",
     "custom_storage_url": "str?",
     "ha_token": "password?",
-    "debug": "bool?"
+    "debug": "bool?",
+    "google_webhook_url": "str?"
   }
 }

@@ -13,7 +13,8 @@ class ConfigManager:
             "hub_id": "",
             "custom_storage_url": "http://homeassistant:8100",
             "ha_token": "",
-            "debug": False
+            "debug": False,
+            "google_webhook_url": ""
         }
         self.load_config()
         
@@ -96,3 +97,7 @@ class ConfigManager:
     @property
     def debug(self) -> bool:
         return self.config["debug"]
+
+    @property
+    def google_webhook_url(self) -> str:
+        return self.config["google_webhook_url"]
