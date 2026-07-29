@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, Tuple
 from startup import StartupCoordinator
 from collectors.custom_storage_collector import CustomStorageCollector
 from collectors.websocket_collector import HomeAssistantWebsocketCollector
+from collectors.analytics_collector import AnalyticsCollector
 from firebase.firestore_writer import FirestoreWriter
 from processors.filters import should_filter_event
 from logger import logger
@@ -37,6 +38,7 @@ class DataCollectorApplication:
     def __init__(self):
         self.coordinator = StartupCoordinator()
         self.custom_storage_collector: Optional[CustomStorageCollector] = None
+        self.analytics_collector: Optional[AnalyticsCollector] = None
         self.firestore_writer: Optional[FirestoreWriter] = None
         self.ws_collector: Optional[HomeAssistantWebsocketCollector] = None
 
@@ -62,6 +64,14 @@ class DataCollectorApplication:
         # 3. Instantiate Custom Storage Collector
         self.custom_storage_collector = CustomStorageCollector(
             base_url=self.coordinator.config_manager.custom_storage_url
+        )
+
+        # 3.5 Instantiate Analytics Collector
+        self.analytics_collector = AnalyticsCollector(
+            matter_ws_url="ws://core-matter-server:5580/ws",
+            custom_storage_url=self.coordinator.config_manager.custom_storage_url,
+            webhook_url=self.coordinator.config_manager.google_webhook_url,
+            enricher=self.enricher
         )
 
         # Perform initial metadata pull before starting websocket
@@ -148,6 +158,29 @@ class DataCollectorApplication:
         except Exception as e:
             logger.error(f"[App] Error in async event enrichment/writing: {e}", exc_info=True)
 
+    async def analytics_sync_loop(self):
+        """Runs the Analytics sync loop daily."""
+        # Wait for HA registries to load (max 60 seconds)
+        if not self.enricher.ha_device_registry:
+            logger.info("[App] Waiting for HA registries to populate before starting analytics sync...")
+            for _ in range(60):
+                if self.enricher.ha_device_registry and self.enricher.ha_entity_registry:
+                    break
+                await asyncio.sleep(1)
+            else:
+                logger.warning("[App] Timeout waiting for HA registries to load. Proceeding with potentially incomplete metadata.")
+                
+        while self._running:
+            try:
+                await self.analytics_collector.run_sync(self.coordinator.hub_id)
+            except Exception as e:
+                logger.error(f"[App] Error running analytics sync: {e}", exc_info=True)
+            # Sleep for 24 hours (86400 seconds)
+            for _ in range(86400):
+                if not self._running:
+                    break
+                await asyncio.sleep(1)
+
     async def start(self):
         """Starts all background tasks and waits for termination."""
         self.loop = asyncio.get_running_loop()
@@ -166,8 +199,11 @@ class DataCollectorApplication:
         ws_listener_task = asyncio.create_task(
             self.ws_collector.connect_and_listen()
         )
+        analytics_task = asyncio.create_task(
+            self.analytics_sync_loop()
+        )
 
-        self.tasks = [custom_storage_task, ws_listener_task]
+        self.tasks = [custom_storage_task, ws_listener_task, analytics_task]
 
         await asyncio.gather(*self.tasks, return_exceptions=True)
 

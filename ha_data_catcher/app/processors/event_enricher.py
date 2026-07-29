@@ -87,16 +87,33 @@ class EventEnricher:
         if ha_node_str == custom_node_str:
             return True
             
-        # Extract numeric suffixes (e.g. "3" from "1-3" or "matter_node_3")
-        import re
-        def get_numeric_suffix(s: str) -> Optional[str]:
-            match = re.search(r'(\d+)\s*$', s)
-            return match.group(1) if match else None
+        # Helper to extract and normalize node ID to a decimal integer
+        def extract_node_id(s: str) -> Optional[int]:
+            import re
             
-        ha_num = get_numeric_suffix(ha_node_str)
-        custom_num = get_numeric_suffix(custom_node_str)
+            # If it's a HA Matter identifier: deviceid_...-1-60 (the last part is HEX)
+            if s.startswith("deviceid_"):
+                parts = s.split('-')
+                if len(parts) >= 2:
+                    try:
+                        return int(parts[-1], 16)
+                    except ValueError:
+                        pass
+            
+            # Otherwise, try extracting the last numeric part as decimal
+            # (e.g. "node_96" or "96")
+            match = re.search(r'(\d+)\s*$', s)
+            if match:
+                try:
+                    return int(match.group(1), 10)
+                except ValueError:
+                    pass
+            return None
+            
+        ha_num = extract_node_id(ha_node_str)
+        custom_num = extract_node_id(custom_node_str)
         
-        if ha_num and custom_num and ha_num == custom_num:
+        if ha_num is not None and custom_num is not None and ha_num == custom_num:
             return True
 
         return False
