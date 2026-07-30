@@ -7,7 +7,9 @@ from typing import Dict, Any, Optional, Tuple
 from startup import StartupCoordinator
 from collectors.custom_storage_collector import CustomStorageCollector
 from collectors.websocket_collector import HomeAssistantWebsocketCollector
+from collectors.matter_collector import MatterDockCollector, parse_endpoint_range
 from firebase.firestore_writer import FirestoreWriter
+from processors.dock_telemetry import DockTelemetryProcessor
 from processors.filters import should_filter_event
 from logger import logger
 
@@ -39,6 +41,10 @@ class DataCollectorApplication:
         self.custom_storage_collector: Optional[CustomStorageCollector] = None
         self.firestore_writer: Optional[FirestoreWriter] = None
         self.ws_collector: Optional[HomeAssistantWebsocketCollector] = None
+
+        # Dock telemetry (optional, gated by the enable_dock_telemetry option)
+        self.matter_collector: Optional[MatterDockCollector] = None
+        self.dock_processor: Optional[DockTelemetryProcessor] = None
 
         # Processor pipelines
         self.parser = None
@@ -81,7 +87,54 @@ class DataCollectorApplication:
             event_callback=self.on_event_received
         )
 
+        # 6. Instantiate dock telemetry (optional feature)
+        self._init_dock_telemetry()
+
         return True
+
+    def _init_dock_telemetry(self):
+        """Sets up Matter dock counter collection, if enabled.
+
+        Isolated and fully non-fatal: any failure here leaves the Home
+        Assistant event pipeline running exactly as before.
+        """
+        config = self.coordinator.config_manager
+        if not config.enable_dock_telemetry:
+            logger.info("[App] Dock telemetry disabled by configuration — skipping Matter Server collector")
+            return
+
+        try:
+            self.dock_processor = DockTelemetryProcessor(
+                hub_id=self.coordinator.hub_id,
+                timezone_name=self.coordinator.ha_timezone,
+                metadata_provider=self.custom_storage_collector.get_metadata_cache,
+                record_writer=self.firestore_writer.write_dock_record,
+                debounce_seconds=config.dock_min_write_interval,
+                # Shared read-only so a dock whose matter_node_id the app failed
+                # to save can still be identified via HA's device registry.
+                enricher=self.enricher,
+            )
+            self.matter_collector = MatterDockCollector(
+                ws_url=config.matter_server_url,
+                snapshot_callback=self.dock_processor.handle_snapshot,
+                product_name_prefixes=config.dock_product_names,
+                cluster_id=config.dock_cluster_id,
+                endpoints=parse_endpoint_range(config.dock_endpoints),
+                poll_interval=config.dock_poll_interval,
+            )
+            logger.info(
+                "[App] Dock telemetry enabled — products "
+                f"{config.dock_product_names}, cluster {config.dock_cluster_id}, "
+                f"endpoints {config.dock_endpoints}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[App] Failed to initialize dock telemetry: {e}. "
+                "Home Assistant event collection continues unaffected.",
+                exc_info=True,
+            )
+            self.matter_collector = None
+            self.dock_processor = None
 
     def on_event_received(self, raw_event: Dict[str, Any]):
         """Callback invoked when a new event is received from HA WebSocket."""
@@ -169,6 +222,13 @@ class DataCollectorApplication:
 
         self.tasks = [custom_storage_task, ws_listener_task]
 
+        # Dock telemetry runs as two additional independent tasks. gather() with
+        # return_exceptions=True means a failure in either cannot take down the
+        # Home Assistant event pipeline.
+        if self.matter_collector and self.dock_processor:
+            self.tasks.append(asyncio.create_task(self.dock_processor.run()))
+            self.tasks.append(asyncio.create_task(self.matter_collector.run()))
+
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
     async def shutdown(self, sig=None):
@@ -184,6 +244,16 @@ class DataCollectorApplication:
 
         if self.ws_collector:
             self.ws_collector.stop()
+        if self.matter_collector:
+            self.matter_collector.stop()
+
+        if self.dock_processor:
+            self.dock_processor.stop()
+            logger.info("[App] Flushing pending dock counter updates...")
+            try:
+                await self.dock_processor.flush()
+            except Exception as e:
+                logger.error(f"[App] Error flushing dock telemetry: {e}")
 
         logger.info("[App] Cancelling background loops...")
         for task in self.tasks:

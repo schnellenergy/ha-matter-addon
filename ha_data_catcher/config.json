@@ -1,7 +1,7 @@
 {
   "name": "HA Data Catcher",
-  "description": "Collects Home Assistant events in real-time, enriches them with Custom Storage metadata, and streams them to Firestore and BigQuery.",
-  "version": "1.0.0",
+  "description": "Collects Home Assistant events and Matter dock hardware counters in real-time, enriches them with Custom Storage metadata, and streams them to Firestore and BigQuery.",
+  "version": "1.1.1",
   "slug": "ha_data_catcher",
   "init": false,
   "startup": "services",
@@ -19,12 +19,26 @@
     "hub_id": "",
     "custom_storage_url": "http://homeassistant:8100",
     "ha_token": "",
-    "debug": false
+    "debug": false,
+    "enable_dock_telemetry": true,
+    "matter_server_url": "ws://core-matter-server:5580/ws",
+    "dock_product_names": "Dock_",
+    "dock_cluster_id": 4294048801,
+    "dock_endpoints": "1-6",
+    "dock_poll_interval": 900,
+    "dock_min_write_interval": 2
   },
   "schema": {
     "hub_id": "str?",
     "custom_storage_url": "str?",
     "ha_token": "password?",
-    "debug": "bool?"
+    "debug": "bool?",
+    "enable_dock_telemetry": "bool?",
+    "matter_server_url": "str?",
+    "dock_product_names": "str?",
+    "dock_cluster_id": "int?",
+    "dock_endpoints": "str?",
+    "dock_poll_interval": "int(60,86400)?",
+    "dock_min_write_interval": "int(0,60)?"
   }
 }
