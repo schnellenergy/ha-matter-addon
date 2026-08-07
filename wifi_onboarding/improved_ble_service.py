@@ -59,6 +59,120 @@ except ImportError as e1:
         logger.error(f"❌ Failed to import D-Bus libraries (system: {e1}, pip: {e2})")
         DBUS_AVAILABLE = False
 
+import led_states
+
+# ---------------------------------------------------------------------------
+# Cross-thread coordination
+# ---------------------------------------------------------------------------
+
+# Set for the whole duration of an app-driven provisioning attempt.
+#
+# Two things depend on it:
+#  * The 0.5 s network monitor must not repaint the LED while an attempt is in
+#    flight. NetworkManager reports wlan0 "connected" at association, before
+#    DHCP, which used to turn the LED solid blue seconds before the hub had an
+#    IP and long before the app knew anything.
+#  * The status characteristic reports "connecting" while it is set, so a read
+#    can never be answered from a stale or half-formed interface state.
+PROVISIONING = threading.Event()
+
+# Set when a factory reset has cleared this hub's Wi-Fi configuration.
+#
+# Boot auto-reconnect runs on a background thread, so it is still alive when the
+# button is pressed. Without this it kept going and — because connect_to_network
+# saved the credentials it was handed — RE-CREATED /data/wifi_config.json that
+# the reset had just deleted. run.sh decides the boot mode purely from that file,
+# so the next power-cycle came up in reconnect mode (solid red) instead of fresh
+# setup mode (blinking red), and the hub looked like it had never been reset.
+FACTORY_RESET = threading.Event()
+
+# Set the first time the app drives a provisioning attempt. Unlike PROVISIONING
+# (which clears when the attempt resolves) this never clears, so boot
+# auto-reconnect stands down for good once the user has taken control — it must
+# not pull the LED back to solid red behind a fresh setup.
+APP_PROVISIONED = threading.Event()
+
+# Serialises Wi-Fi (re)configuration. Boot auto-reconnect now runs on a
+# background thread alongside the BLE service (so the hub is discoverable
+# immediately), which means without this an auto-reconnect attempt could call
+# Supervisor's wlan0/update at the same moment as an app-driven attempt.
+WIFI_OP_LOCK = threading.Lock()
+
+# Terminal provisioning outcomes. Once current_status holds one of these it is
+# authoritative and must not be recomputed from an interface probe.
+TERMINAL_OK = frozenset({'connected'})
+TERMINAL_FAIL = frozenset({
+    'auth_failed', 'network_not_found', 'connection_timeout',
+    'network_error', 'connection_error', 'error',
+})
+
+_supervisor_singleton = None
+_supervisor_lock = threading.Lock()
+
+
+def get_supervisor():
+    """Shared SupervisorAPI instance, or None if the module is unavailable.
+
+    Built once: the constructor performs a connectivity probe, and this is
+    called from the 0.5 s monitor and from every status read, so constructing
+    it per call meant two HTTP requests to the Supervisor several times a
+    second for the entire life of the add-on.
+    """
+    global _supervisor_singleton
+    if _supervisor_singleton is not None:
+        return _supervisor_singleton
+    with _supervisor_lock:
+        if _supervisor_singleton is None:
+            try:
+                from supervisor_api import SupervisorAPI
+                _supervisor_singleton = SupervisorAPI()
+            except Exception as e:
+                logger.error(f"❌ Supervisor API unavailable: {e}")
+                return None
+    return _supervisor_singleton
+
+
+def has_saved_wifi_config() -> bool:
+    """True when the hub holds Wi-Fi credentials of its own.
+
+    "wlan0 is connected" and "the hub is provisioned" are NOT the same thing.
+    NetworkManager keeps its own wlan0 profile on the host, and that profile
+    survives the add-on deleting /data/wifi_config.json — a freshly booted,
+    never-onboarded hub can report wlan0 connected with an IP.
+
+    Without this distinction the LED went solid blue about half a second after a
+    factory reset completed, instead of the blinking red that tells an installer
+    the hub is waiting to be set up.
+    """
+    try:
+        with open('/data/wifi_config.json', 'r') as f:
+            return bool(json.load(f).get('ssid'))
+    except Exception:
+        return False
+
+
+_addon_options = None
+
+
+def addon_option(name: str, default):
+    """Read a value from the add-on's /data/options.json, cached.
+
+    run.sh only exports a subset of the options, so options like
+    `connection_timeout` were declared in config.json and then never read by
+    anything.
+    """
+    global _addon_options
+    if _addon_options is None:
+        try:
+            with open('/data/options.json', 'r') as f:
+                _addon_options = json.load(f)
+        except Exception as e:
+            logger.debug(f"No add-on options available ({e}); using defaults")
+            _addon_options = {}
+    value = _addon_options.get(name)
+    return default if value is None else value
+
+
 class KernelAdvertiser:
     """BLE advertising through the kernel's Bluetooth Management (mgmt) API.
 
@@ -238,24 +352,23 @@ def get_mac_address():
         return None
 
 
-def set_led_status(status: str):
-    """Helper function to control the LED by writing to a status file."""
+def set_led_status(status: str, force: bool = False, steady: bool = False):
+    """Request an LED state.
+
+    The controller arbitrates by rank (see led_states), so a request may be
+    held back if a more important state is currently displayed — that is what
+    stops this periodic caller from erasing 'factory_reset' or
+    'wifi_provisioning'. Pass force=True only to release a transient state you
+    entered yourself.
+
+    An unknown name is refused rather than silently rewritten to 'error', which
+    used to make a typo look like a hardware fault.
+    """
     try:
-        # Validate status before setting
-        valid_statuses = [
-            'booting', 'error', 'factory_reset', 'ethernet_connected', 
-            'wifi_connected', 'wifi_connecting', 'ble_advertising', 
-            'setup_in_progress', 'wifi_no_internet', 'ethernet_no_internet', 
-            'internet_connected', 'dual_network', 'shutdown'
-        ]
-        
-        if status not in valid_statuses:
-            logger.error(f"🚥 INVALID LED STATUS: '{status}' - using 'error' instead")
-            status = 'error'
-        
-        with open("/tmp/led_status", 'w') as f:
-            f.write(status)
-        logger.info(f"🚥 LED status set to: {status}")
+        if not led_states.write_request(status, force, steady):
+            logger.error(f"🚥 Refusing to write unknown LED state: '{status}'")
+            return
+        logger.debug(f"🚥 LED state requested: {status}{' (forced)' if force else ''}")
     except Exception as e:
         logger.error(f"Failed to write LED status: {e}")
 
@@ -410,7 +523,6 @@ http:
         for attempt in range(max_attempts):
             try:
                 # Test if Home Assistant is listening on the Ethernet IP
-                import socket
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 test_socket.settimeout(3)
                 result = test_socket.connect_ex((eth_ip, 8123))
@@ -504,36 +616,40 @@ def _setup_basic_ethernet_access(eth_status):
 
 def update_network_led_status():
     """
-    Update LED status based on network connection using HA Supervisor API
-    Priority: Ethernet > WiFi > No connection (blinking red)
+    Report steady-state network status on the LED (Ethernet > WiFi > idle).
+
+    This is the LOWEST-priority LED writer. It runs on a timer and reflects only
+    what the interfaces are doing, so it must never speak while a transient
+    state owns the LED:
+
+      * An app-driven provisioning attempt (PROVISIONING) is skipped outright
+        here, and would be rejected by the controller's ranking anyway.
+      * Factory reset, reset-refused and boot reconnect outrank everything this
+        function emits, so the controller holds them.
+
+    Before ranking existed, this function erased 'factory_reset' within 500 ms
+    of the button being pressed, and painted solid blue at association — before
+    DHCP, before the IP was published, and before the app knew anything.
     """
     try:
         # Rate limiting for instant transitions
-        import time
         current_time = time.time()
         if hasattr(update_network_led_status, 'last_call_time'):
             if current_time - update_network_led_status.last_call_time < 0.05:
                 logger.debug("🚥 Network LED update rate limited (<0.05s since last call)")
                 return
         update_network_led_status.last_call_time = current_time
-        
-        # Import Supervisor API helper
-        try:
-            from supervisor_api import SupervisorAPI
-        except ImportError:
-            logger.error("❌ supervisor_api module not found for LED status")
-            set_led_status('error')
+
+        supervisor = get_supervisor()
+        if supervisor is None:
+            logger.error("❌ Supervisor API unavailable for LED status")
             return
-        
-        # Initialize Supervisor API
-        supervisor = SupervisorAPI()
-        
+
         # Get network info from Supervisor
         network_info = supervisor.get_network_info()
         
         if not network_info:
             logger.warning("⚠️ Could not get network info from Supervisor")
-            set_led_status('booting')
             return
         
         # Parse interfaces array from Supervisor API response
@@ -560,37 +676,68 @@ def update_network_led_status():
                     logger.debug(f"🔍 WiFi wlan0 connected via Supervisor")
                     break
         
-        # Log current network state
-        logger.info(f"🔍 Network status via HA Supervisor: Ethernet={eth_connected}, WiFi={wifi_connected}")
+        # Debug, not info: this runs twice a second forever.
+        logger.debug(
+            f"🔍 Network status via HA Supervisor: "
+            f"Ethernet={eth_connected}, WiFi={wifi_connected}")
         
-        # Set LED based on connection priority
-        if eth_connected:
-            set_led_status('ethernet_connected')  # Solid green
-            logger.info("🚥 LED: Solid GREEN (Ethernet connected)")
-        elif wifi_connected:
-            set_led_status('wifi_connected')  # Solid blue
-            logger.info("🚥 LED: Solid BLUE (WiFi connected)")
+        # Ethernet is an OVERLAY: whenever a cable is in, the LED shows solid
+        # green no matter what else is happening, and everything below still runs
+        # exactly as it would have. Pull the cable and the LED reveals the state
+        # the hub was in all along. Reported before the provisioning gate below,
+        # so plugging in mid-provisioning is picked up immediately.
+        led_states.set_overlay(eth_connected)
+
+        # Steady-state rule, in two levels.
+        #
+        # LEVEL 1 — is the hub set up at all? An unprovisioned hub always shows
+        # "ready to onboard", whatever its links are doing. That is the only
+        # actionable thing about it, and it is what makes every post-reset
+        # scenario behave identically: reset on Wi-Fi, reset with an Ethernet
+        # cable in, or reset then power-cycle all end up blinking red. Reporting
+        # a link state instead (solid green over Ethernet, say) claims the hub is
+        # fine and leaves an installer with nothing telling them to onboard it.
+        #
+        # LEVEL 2 — once provisioned, describe the connection: Ethernet wins over
+        # Wi-Fi when both are up.
+        #
+        # Blue additionally requires the hub to actually be provisioned, because
+        # NetworkManager can hold a wlan0 profile of its own that outlives a
+        # factory reset — 'connected' alone is not evidence of anything.
+        provisioned = has_saved_wifi_config()
+
+        if provisioned and wifi_connected:
+            state, description = 'wifi_connected', 'provisioned and on WiFi'
+        elif not provisioned:
+            state, description = 'ble_advertising', 'not provisioned - ready to onboard'
         else:
-            # No network connection - check auto-reconnect mode
-            auto_reconnect = os.getenv('WIFI_AUTO_RECONNECT', 'false').lower() == 'true'
-            
-            if auto_reconnect:
-                try:
-                    with open("/tmp/led_status", 'r') as f:
-                        current_status = f.read().strip()
-                    
-                    if current_status == 'wifi_connecting':
-                        logger.debug("🚥 LED: Maintaining SOLID RED (WiFi reconnection in progress)")
-                        return
-                except:
-                    pass
-            
-            set_led_status('booting')  # Blinking red
-            logger.info("🚥 LED: Blinking RED (No network - ready for WiFi setup)")
-            
+            # Provisioned but Wi-Fi is down: a saved network out of range.
+            # 'wifi_connecting' outranks this while the reconnect thread is still
+            # trying, so the controller holds solid red for us.
+            state, description = 'ble_advertising', 'provisioned but offline'
+
+        # An app-driven attempt owns the base state until it resolves. The
+        # Ethernet overlay above is still reported, so plugging a cable in during
+        # provisioning turns the LED green immediately without disturbing the
+        # attempt underneath.
+        if PROVISIONING.is_set():
+            return
+
+        set_led_status(state, steady=True)
+
+        # Log only on change, and describe the NETWORK, not the LED. This runs
+        # twice a second for the life of the add-on, and it used to announce the
+        # LED state it *wanted* on every tick — including while the controller
+        # was correctly refusing it, which made a working reset look like a stuck
+        # blue LED in the logs.
+        if getattr(update_network_led_status, 'last_state', None) != state:
+            update_network_led_status.last_state = state
+            logger.info(f"🔍 Network state: {description} -> requesting '{state}'")
+
     except Exception as e:
+        # Leave the LED alone on error: overwriting it here is how a transient
+        # Supervisor hiccup used to wipe a more important state.
         logger.error(f"Error updating LED status via Supervisor API: {e}")
-        set_led_status('booting')  # Default to blinking red
 
 class WiFiController:
     """Enhanced WiFi controller with proper network management and LED status integration"""
@@ -709,8 +856,10 @@ class WiFiController:
                             return {'connected': True, 'interface': interface, 'ip': current_ip}
                     
                     elif is_up and not has_ip:
-                        # Interface is up but no IP yet, might be getting DHCP
-                        logger.info(f"🔍 Ethernet {interface} is up but waiting for IP...")
+                        # Interface is up but no IP yet, might be getting DHCP.
+                        # Debug: the network monitor calls this twice a second,
+                        # and an unplugged-but-up end0 logged this forever.
+                        logger.debug(f"🔍 Ethernet {interface} is up but waiting for IP...")
                         return {'connected': False, 'interface': interface, 'ip': None}
                         
             except Exception as e:
@@ -944,77 +1093,201 @@ class WiFiController:
 
         return True
 
-    def connect_to_network(self, ssid: str, password: str) -> Dict[str, str]:
-        """Connect to a WiFi network using Home Assistant Supervisor API"""
+    def _save_config_durably(self, ssid: str, password: str) -> bool:
+        """Persist working credentials atomically and verify them.
+
+        Durable because a hub is often power-cycled soon after setup: without
+        fsync the data can still be in the page cache when power is pulled, and
+        the file comes back empty. run.sh then finds no SSID, deletes it, and the
+        hub boots as if it had never been provisioned — blinking red, no
+        reconnect.
+        """
+        config = {
+            "ssid": ssid,
+            "password": password,
+            "timestamp": time.time(),
+            "configured": True,
+        }
+        try:
+            tmp_path = self.config_path + '.tmp'
+            with open(tmp_path, 'w') as f:
+                json.dump(config, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.config_path)
+            try:
+                dir_fd = os.open(os.path.dirname(self.config_path), os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception as e:
+                logger.debug(f"Directory fsync unavailable: {e}")
+
+            # This file is the ONLY thing deciding whether the hub reconnects
+            # after a reboot, so a silent failure costs the user a hub that
+            # never comes back.
+            with open(self.config_path, 'r') as f:
+                written = json.load(f).get('ssid')
+            if written == ssid:
+                logger.info(f"📝 WiFi configuration saved and verified: {self.config_path}")
+                return True
+            logger.error(
+                f"❌ WiFi config read back as {written!r}, expected {ssid!r} - "
+                "the hub may not reconnect after a reboot")
+        except Exception as e:
+            logger.error(f"❌ Could not save WiFi configuration: {e}")
+        return False
+
+    def connect_to_network(
+        self,
+        ssid: str,
+        password: str,
+        persist: bool = True,
+        assoc_timeout: Optional[int] = None,
+        dhcp_timeout: Optional[int] = None,
+    ) -> Dict[str, str]:
+        """Connect to a WiFi network using Home Assistant Supervisor API.
+
+        Serialised by WIFI_OP_LOCK so an app-driven attempt and a background
+        auto-reconnect attempt can never reconfigure wlan0 at the same time.
+
+        Does not touch the LED — callers own that, because the correct
+        indication differs between app provisioning and boot reconnect.
+
+        `persist=False` means "do not save these credentials". Auto-reconnect
+        passes False: it is reconnecting with credentials it just READ from disk,
+        so writing them back achieves nothing — and if a factory reset deleted
+        the file in the meantime, writing it back resurrects it and undoes the
+        reset. Only genuinely new credentials from the app should be saved.
+
+        `assoc_timeout` / `dhcp_timeout` override the configured budget, so
+        auto-reconnect can fail fast on a network that is simply gone instead of
+        holding the LED on solid red for minutes.
+        """
+        with WIFI_OP_LOCK:
+            return self._connect_to_network_locked(
+                ssid, password, persist, assoc_timeout, dhcp_timeout
+            )
+
+    def _connect_to_network_locked(
+        self,
+        ssid: str,
+        password: str,
+        persist: bool = True,
+        assoc_override: Optional[int] = None,
+        dhcp_override: Optional[int] = None,
+    ) -> Dict[str, str]:
         try:
             logger.info(f"🔗 Connecting to WiFi via HA Supervisor: {ssid}")
-            
-            # Import Supervisor API helper
-            try:
-                from supervisor_api import SupervisorAPI
-            except ImportError:
+
+            supervisor = get_supervisor()
+            if supervisor is None:
                 logger.error("❌ supervisor_api module not found")
                 return {"status": "error", "error": "Supervisor API not available"}
-            
-            # Save config for persistence (in case of reconnection after reboot)
-            config = {
-                "ssid": ssid,
-                "password": password,
-                "timestamp": time.time(),
-                "configured": True
-            }
-            
-            with open(self.config_path, 'w') as f:
-                json.dump(config, f, indent=2)
-            logger.info(f"📝 WiFi configuration saved to {self.config_path}")
-            
-            # Initialize Supervisor API
-            supervisor = SupervisorAPI()
-            
+
+            # NOTE: the credentials are deliberately NOT saved yet — see the
+            # verified write after the connection succeeds. Saving first meant a
+            # REJECTED password still produced /data/wifi_config.json, which made
+            # the hub look provisioned (so the LED could go blue on a wrong
+            # password) and made it boot into an endless reconnect loop with
+            # credentials that were already known to be wrong.
+
             # Configure WiFi via HA Supervisor
             logger.info(f"🔧 Sending WiFi configuration to HA Supervisor...")
-            success = supervisor.configure_wifi(ssid, password)
-            
-            if not success:
+            applied = supervisor.configure_wifi(ssid, password)
+
+            if not applied.get('ok'):
+                if applied.get('reason') == 'auth_failed':
+                    # NetworkManager rejected the credentials outright — say so
+                    # straight away instead of waiting out the association budget.
+                    logger.error("❌ WiFi credentials rejected by NetworkManager")
+                    return {
+                        "status": "auth_failed",
+                        "error": "Incorrect WiFi password. Please try again.",
+                    }
                 logger.error("❌ Failed to configure WiFi via Supervisor API")
-                return {"status": "auth_failed", "error": "Please re-enter correct password"}
-            
-            # Wait for HA to connect and assign IP
+                return {
+                    "status": "network_error",
+                    "error": "Could not apply WiFi settings. Please try again.",
+                }
+
+            # Wait in two phases so the failure reason is honest, and so a
+            # genuinely wrong password is reported quickly instead of after the
+            # whole budget. Total budget comes from the add-on's
+            # `connection_timeout` option, which nothing used to read.
+            #
+            # Each phase has a 10 s floor, so a configured total below 20 s
+            # behaves as 20 s. Anything shorter cannot distinguish a slow
+            # association from a failed one, which is the whole point of the
+            # split.
+            total_timeout = int(addon_option('connection_timeout', 60))
+            assoc_timeout = assoc_override or max(10, min(20, total_timeout // 3))
+            dhcp_timeout = dhcp_override or max(10, total_timeout - assoc_timeout)
+
             logger.info("⏳ Waiting for HA Supervisor to connect and assign IP...")
-            wifi_ip = supervisor.wait_for_wifi_connection(timeout=30)
-            
+            outcome = supervisor.wait_for_connection_phased(
+                expected_ssid=ssid,
+                assoc_timeout=assoc_timeout,
+                dhcp_timeout=dhcp_timeout,
+            )
+            wifi_ip = outcome.get('ip')
+
             if not wifi_ip:
-                logger.error("❌ WiFi connection timeout - no IP assigned")
-                # Check if it's an authentication failure
-                wlan0_status = supervisor.get_wlan0_status()
-                if wlan0_status and not wlan0_status.get("connected"):
-                    return {"status": "auth_failed", "error": "Please re-enter correct password"}
-                return {"status": "error", "error": "Connection timeout"}
-            
+                reason = outcome.get('reason')
+                if reason == 'auth_failed':
+                    logger.error("❌ wlan0 never associated - wrong passphrase")
+                    return {
+                        "status": "auth_failed",
+                        "error": "Incorrect WiFi password. Please try again.",
+                    }
+                logger.error("❌ Associated but no IP address assigned")
+                return {
+                    "status": "network_error",
+                    "error": "Connected to WiFi but no IP address was assigned. "
+                             "Please check your router.",
+                }
+
             logger.info(f"✅ WiFi connected successfully via HA Supervisor!")
             logger.info(f"📡 IP Address: {wifi_ip}")
-            
-            # Get MAC address and save IP to Firestore
+
+            # Only NOW are these credentials known to work, so only now are they
+            # worth remembering for the next boot.
+            if persist and not FACTORY_RESET.is_set():
+                self._save_config_durably(ssid, password)
+            else:
+                logger.info(
+                    "📝 Not saving WiFi configuration "
+                    f"(persist={persist}, factory_reset={FACTORY_RESET.is_set()})")
+
+            # Publish the IP so the app can find the hub on the LAN. Verified
+            # with retries: the app cannot finish onboarding without this
+            # record, so a silent failure here left the hub online and the app
+            # waiting forever.
+            ip_published = False
             mac_address = get_mac_address()
             if mac_address:
                 logger.info(f"📍 Hub MAC Address: {mac_address}")
-                
-                # Save IP to Firestore
+
                 if FIRESTORE_AVAILABLE:
                     try:
                         firestore_helper = FirestoreHelper()
-                        success = firestore_helper.save_hub_ip(mac_address, wifi_ip)
-                        if success:
+                        ip_published = firestore_helper.save_hub_ip(mac_address, wifi_ip)
+                        if ip_published:
                             logger.info(f"✅ IP saved to Firestore: smash_db/{mac_address}/home_ip = {wifi_ip}")
                         else:
-                            logger.warning(f"⚠️ Failed to save IP to Firestore")
+                            logger.error(
+                                "❌ Could not publish hub IP - the app will not be able "
+                                "to locate this hub until this succeeds"
+                            )
                     except Exception as e:
                         logger.error(f"❌ Error saving IP to Firestore: {e}")
                 else:
                     logger.warning("⚠️ Firestore not available, IP not saved to database")
             else:
                 logger.warning("⚠️ Could not get MAC address, IP not saved to Firestore")
-            
+
+
             # Check if Ethernet is also connected (dual network)
             eth_status = supervisor.get_ethernet_status()
             has_ethernet = eth_status is not None
@@ -1025,9 +1298,12 @@ class WiFiController:
                 "ip": wifi_ip,
                 "wifi_ip": wifi_ip,
                 "ssid": ssid,
-                "hub_url": f"http://{wifi_ip}:8123"
+                "hub_url": f"http://{wifi_ip}:8123",
+                # Diagnostic only: the connection itself is what "connected"
+                # means, so a publish failure does not downgrade the result.
+                "ip_published": ip_published,
             }
-            
+
             if mac_address:
                 connection_result["mac_address"] = mac_address
             
@@ -1050,10 +1326,10 @@ class WiFiController:
                 })
                 logger.info(f"📶 WiFi-only access: {wifi_ip}")
             
-            # Update LED status to reflect connection
-            logger.info("🚥 Updating LED status...")
-            update_network_led_status()
-            
+            # LED is deliberately not touched here — the caller owns it, since
+            # app provisioning and boot reconnect need different indications
+            # and only the caller knows which one this is.
+
             logger.info(f"🎉 WiFi connection complete via HA Supervisor!")
             logger.info(f"🌐 Home Assistant accessible at: http://{wifi_ip}:8123")
             logger.info(f"📱 Check HA Dashboard → Settings → Network to see wlan0 connected")
@@ -1063,9 +1339,8 @@ class WiFiController:
         except Exception as e:
             logger.error(f"❌ Failed to connect to WiFi via Supervisor API: {e}")
             logger.error(f"   Error details: {type(e).__name__}: {str(e)}")
-            import traceback
             logger.error(f"   Stack trace: {traceback.format_exc()}")
-            set_led_status('error')
+            # LED left to the caller (see above).
             return {"status": "error", "error": f"Connection failed: {str(e)}"}
 
     def load_saved_config(self) -> Optional[Dict]:
@@ -1377,8 +1652,12 @@ class BLEGATTService:
             
             logger.info(f"🔌 Configured adapter as '{self.device_name}'")
             
-            # Create and register GATT service
-            self.service_manager = SmashGATTApplication(self.bus, self.wifi_controller)
+            # Create and register GATT service. Passing `self` gives the
+            # characteristics a route back to advertising control — without it
+            # the post-connect stop_advertising() call raised AttributeError.
+            self.service_manager = SmashGATTApplication(
+                self.bus, self.wifi_controller, ble_service=self
+            )
             gatt_manager = dbus.Interface(
                 self.bus.get_object('org.bluez', adapter_path),
                 'org.bluez.GattManager1'
@@ -1427,7 +1706,6 @@ class BLEGATTService:
             
         except Exception as e:
             logger.error(f"❌ Failed to start BLE service: {e}")
-            import traceback
             logger.error(f"Stack trace: {traceback.format_exc()}")
             return False
     
@@ -1454,16 +1732,18 @@ if DBUS_AVAILABLE:
     class SmashGATTApplication(dbus.service.Object):
         """Main GATT Application"""
         
-        def __init__(self, bus, wifi_controller):
+        def __init__(self, bus, wifi_controller, ble_service=None):
             self.path = '/org/bluez/smash/application'
             self.bus = bus
             self.wifi_controller = wifi_controller
-            
+            self.ble_service = ble_service
+
             dbus.service.Object.__init__(self, bus, self.path)
-            
+
             # Create the main service
-            self.service = SmashWiFiService(bus, 0, wifi_controller)
-            
+            self.service = SmashWiFiService(bus, 0, wifi_controller, ble_service)
+
+
         def get_path(self):
             return dbus.ObjectPath(self.path)
         
@@ -1482,13 +1762,15 @@ if DBUS_AVAILABLE:
     class SmashWiFiService(dbus.service.Object):
         """Main WiFi Configuration Service"""
         
-        def __init__(self, bus, index, wifi_controller):
+        def __init__(self, bus, index, wifi_controller, ble_service=None):
             self.path = f'/org/bluez/smash/service{index}'
             self.bus = bus
             self.wifi_controller = wifi_controller
+            self.ble_service = ble_service
             self.uuid = BLEGATTService.WIFI_SERVICE_UUID
             self.primary = True
-            
+
+
             dbus.service.Object.__init__(self, bus, self.path)
             
             # Create characteristics
@@ -1565,6 +1847,22 @@ if DBUS_AVAILABLE:
                 'has_prev': page > 0
             }
         
+        def stop_advertising(self):
+            """Stop BLE advertising, delegating to the owning BLEGATTService.
+
+            This method exists because the post-connect path called
+            `self.service.stop_advertising()` on this object, which had no such
+            method. The resulting AttributeError was swallowed by the caller's
+            blanket `except`, which then overwrote a freshly published
+            'connected' status with 'error' and notified that error to the app —
+            so a hub that had just joined WiFi successfully could report failure
+            (and the app would ask for the password again).
+            """
+            if self.ble_service is None:
+                logger.warning("⚠️ No BLE service reference - cannot stop advertising")
+                return
+            self.ble_service.stop_advertising()
+
         def notify_status_change(self, status_data):
             """Notify clients of status changes via BLE notifications"""
             try:
@@ -1711,78 +2009,141 @@ if DBUS_AVAILABLE:
                 }
         
         def _connect_wifi_async(self, ssid, password):
-            """Async WiFi connection with status updates"""
+            """Run one app-driven provisioning attempt and publish the outcome.
+
+            Ordering is deliberate: the outcome is stored and notified FIRST,
+            and only then is advertising stopped, inside its own try/except.
+            Previously advertising was stopped inline and the call raised
+            AttributeError on *every* success (see SmashWiFiService.
+            stop_advertising); that fell through to the blanket handler below,
+            which replaced the just-published 'connected' with 'error' and
+            notified it — so a hub that had joined WiFi fine could report
+            failure and the app would ask for the password again.
+
+            `terminal_published` makes that structurally impossible now.
+            """
+            terminal_published = False
+
+            # Own the LED for the duration: fast blinking red, with the periodic
+            # network monitor suppressed so it cannot paint solid blue at
+            # association (before DHCP, and before the app knows anything).
+            PROVISIONING.set()
+            APP_PROVISIONED.set()
+            # Genuinely new credentials supersede any earlier reset, so saving
+            # them is correct again from here on.
+            FACTORY_RESET.clear()
+            set_led_status('wifi_provisioning')
+
+            def publish(status_data):
+                """Store and notify one status update."""
+                self.service.current_status = status_data
+                self.service.notify_status_change(status_data)
+
             try:
-                # Update status during connection
-                connecting_status = {
+                publish({
                     'status': 'connecting',
-                    'message': 'Connecting to WiFi...', 
+                    'message': 'Connecting to WiFi...',
                     'ssid': ssid
-                }
-                self.service.current_status = connecting_status
-                # Notify clients we're connecting
-                self.service.notify_status_change(connecting_status)
-                
+                })
+
                 result = self.service.wifi_controller.connect_to_network(ssid, password)
                 logger.info(f"📶 WiFi connection result: {result['status']}")
-                
-                # Update final status
-                if result['status'] == 'connected':
-                    logger.info(f"✅ WiFi connected successfully! IP: {result.get('ip', 'unknown')}")
-                    status_update = {
+
+                # 'connected_no_internet' means a usable static IP, so it is
+                # still reported to the app as success — unchanged behaviour.
+                if result['status'] in ('connected', 'connected_no_internet'):
+                    wifi_ip = result.get('ip')
+                    logger.info(f"✅ WiFi connected successfully! IP: {wifi_ip or 'unknown'}")
+
+                    publish({
                         'status': 'connected',
                         'ssid': ssid,
-                        'ip': result.get('ip'),
+                        'ip': wifi_ip,
+                        'wifi_ip': wifi_ip,
                         'hub_url': result.get('hub_url'),
+                        'connection_type': result.get('connection_type'),
                         'message': f'Successfully connected to {ssid}'
-                    }
-                    self.service.current_status = status_update
-                    # Immediately notify clients of status change
-                    self.service.notify_status_change(status_update)
+                    })
+                    terminal_published = True
 
-                    # CRITICAL: Stop BLE advertising after successful WiFi connection
-                    logger.info("🔄 WiFi connected - stopping BLE advertising")
-                    self.service.stop_advertising()
-                elif result['status'] == 'connected_no_internet':
-                    logger.info(f"✅ WiFi connected with static IP: {result.get('ip', 'unknown')}")
-                    status_update = {
-                        'status': 'connected',  # Report as connected since static IP works
-                        'ssid': ssid,
-                        'ip': result.get('ip'),
-                        'hub_url': result.get('hub_url'),
-                        'message': f'Successfully connected to {ssid}'
-                    }
-                    self.service.current_status = status_update
-                    # Immediately notify clients of status change
-                    self.service.notify_status_change(status_update)
+                    # Ethernet keeps LED priority when both links are up, so
+                    # pick the final colour from the result rather than letting
+                    # the monitor correct a blue flash a moment later.
+                    PROVISIONING.clear()
+                    if FACTORY_RESET.is_set():
+                        # The user reset the hub while this attempt was in
+                        # flight. The reset owns the LED now; claiming success
+                        # would overwrite its indication with a stale result.
+                        logger.info("🛑 Reset happened mid-attempt - not claiming the LED")
+                    else:
+                        # Ethernet is an overlay now, so the base state is simply
+                        # 'connected over WiFi'; green appears by itself if a
+                        # cable is in.
+                        set_led_status('wifi_connected', force=True)
 
-                    # CRITICAL: Stop BLE advertising after successful WiFi connection (static IP)
-                    logger.info("🔄 WiFi connected (static IP) - stopping BLE advertising")
-                    self.service.stop_advertising()
+                    # Isolated: advertising is a side effect, and a fault here
+                    # must never change the reported outcome.
+                    try:
+                        logger.info("🔄 WiFi connected - stopping BLE advertising")
+                        self.service.stop_advertising()
+                    except Exception as adv_error:
+                        logger.warning(
+                            f"⚠️ Could not stop BLE advertising: {adv_error} "
+                            "(WiFi connection is unaffected)"
+                        )
                 else:
                     logger.error(f"❌ WiFi connection failed: {result.get('error', 'Unknown error')}")
                     # Preserve the specific error type instead of converting everything to 'error'
-                    error_status = {
-                        'status': result['status'],  # Keep original status (auth_failed, connection_timeout, etc.)
+                    publish({
+                        'status': result['status'],  # auth_failed / network_error / ...
                         'error': result.get('error', 'Connection failed'),
                         'message': result.get('error', 'Connection failed'),
+                        'ssid': ssid
+                    })
+                    terminal_published = True
+
+                    # Back to plain blinking red — the hub genuinely is ready to
+                    # be onboarded again.
+                    PROVISIONING.clear()
+                    if not FACTORY_RESET.is_set():
+                        set_led_status('ble_advertising', force=True)
+
+            except Exception as e:
+                logger.error(f"❌ Async connection error: {e}")
+                logger.error(f"   Stack trace: {traceback.format_exc()}")
+                if terminal_published:
+                    # A terminal outcome is already out; never contradict it.
+                    # This is the guard that stops a late fault from turning a
+                    # successful connection into a reported failure.
+                    logger.warning(
+                        "⚠️ Error raised after the outcome was published - "
+                        "keeping the published result"
+                    )
+                else:
+                    error_status = {
+                        'status': 'error',
+                        'error': str(e),
+                        'message': 'Connection failed. Please try again.',
                         'ssid': ssid
                     }
                     self.service.current_status = error_status
                     # Immediately notify clients of error
                     self.service.notify_status_change(error_status)
-                
-            except Exception as e:
-                logger.error(f"❌ Async connection error: {e}")
-                error_status = {
-                    'status': 'error',
-                    'error': str(e),
-                    'ssid': ssid
-                }
-                self.service.current_status = error_status
-                # Immediately notify clients of error
-                self.service.notify_status_change(error_status)
-        
+                    PROVISIONING.clear()
+                    set_led_status('ble_advertising', force=True)
+            finally:
+                # Belt and braces. Reaching here with the gate still set means we
+                # left by a path that did not resolve the attempt — the LED would
+                # otherwise stay on fast-blink red forever, because
+                # 'wifi_provisioning' outranks everything the network monitor can
+                # write, so the monitor could never take it back.
+                if PROVISIONING.is_set():
+                    PROVISIONING.clear()
+                    set_led_status('ble_advertising', force=True)
+                    logger.warning(
+                        "⚠️ Provisioning ended without a resolved outcome - "
+                        "gate cleared and LED released")
+
         @dbus.service.method('org.freedesktop.DBus.Properties',
                              in_signature='s', out_signature='a{sv}')
         def GetAll(self, interface):
@@ -1838,14 +2199,50 @@ if DBUS_AVAILABLE:
                 return [dbus.Byte(c) for c in response.encode('utf-8')]
         
         def _get_comprehensive_network_status(self):
-            """Get comprehensive network status including WiFi and Ethernet"""
-            
-            # Check WiFi status
+            """Answer a status read.
+
+            Order of truth matters, and getting it wrong is what made iOS hang
+            on "Connecting" forever:
+
+            1. A finished provisioning attempt wins. The thread that performed
+               the connection knows the outcome for certain; an interface probe
+               is an inference. This is also what removes the old hard
+               dependency on `wpa_cli`.
+            2. An attempt still in flight always answers 'connecting', so a read
+               can never be served from a half-formed interface state — and
+               'ethernet_only' can no longer be returned mid-provisioning (the
+               app parses anything unrecognised as a retryable failure, so a
+               hub with a LAN cable reported a false wrong-password).
+            3. Only when idle do we describe the live interfaces.
+
+            The JSON keys are unchanged in every branch; only how the answer is
+            decided has changed, so neither app platform needs to be touched to
+            understand it.
+            """
+            current = self.service.current_status or {}
+            current_state = current.get('status')
+
+            # 1. Terminal outcome from the connection thread is authoritative.
+            if current_state in TERMINAL_OK:
+                return dict(current)
+
+            if current_state in TERMINAL_FAIL:
+                return self._friendly_failure(current)
+
+            # 2. An attempt in flight always reads as 'connecting'.
+            if PROVISIONING.is_set() or current_state == 'connecting':
+                return {
+                    'status': 'connecting',
+                    'message': "🔗 Connecting to WiFi...",
+                    'user_action': 'Please wait while we connect to your network.',
+                    'progress': current.get('progress', 'Initializing...'),
+                    'ssid': current.get('ssid'),
+                }
+
+            # 3. Idle: describe live interfaces.
             wifi_status = self._get_wifi_status()
-            
-            # Check Ethernet status
             eth_status = self._get_ethernet_status()
-            
+
             # Determine primary connection and user message
             if wifi_status['connected'] and eth_status['connected']:
                 # Both connected - provide dual access information
@@ -1882,92 +2279,105 @@ if DBUS_AVAILABLE:
                     'hub_url': f"http://{eth_status['ip']}:8123"
                 }
             else:
-                # No connections
-                if self.service.current_status.get('status') == 'connecting':
-                    return {
-                        'status': 'connecting',
-                        'message': f"🔗 Connecting to WiFi...",
-                        'user_action': 'Please wait while we connect to your network.',
-                        'progress': self.service.current_status.get('progress', 'Initializing...')
-                    }
-                elif self.service.current_status.get('status') == 'error':
-                    error_msg = self.service.current_status.get('error', 'Unknown error')
-                    
-                    # Provide user-friendly error messages
-                    if 'auth_failed' in error_msg or 'wrong password' in error_msg.lower() or 'authentication' in error_msg.lower():
-                        return {
-                            'status': 'auth_failed',
-                            'message': f"❌ Incorrect WiFi password.",
-                            'user_action': 'Please double-check your password and try again.',
-                            'error_details': error_msg,
-                            'retry': True
-                        }
-                    elif 'network_not_found' in error_msg or 'not found' in error_msg.lower():
-                        return {
-                            'status': 'network_not_found',
-                            'message': f"❌ WiFi network not found.",
-                            'user_action': 'Please check the network name or try refreshing the list.',
-                            'error_details': error_msg,
-                            'retry': True
-                        }
-                    elif 'connection_timeout' in error_msg or 'timeout' in error_msg.lower():
-                        return {
-                            'status': 'connection_timeout',
-                            'message': f"❌ Connection timed out.",
-                            'user_action': 'Please check signal strength and try again.',
-                            'error_details': error_msg,
-                            'retry': True
-                        }
-                    elif 'DHCP' in error_msg or 'IP' in error_msg:
-                        return {
-                            'status': 'network_error',
-                            'message': f"❌ Network configuration failed.",
-                            'user_action': 'Check your router settings and try again.',
-                            'error_details': error_msg,
-                            'retry': True
-                        }
-                    else:
-                        return {
-                            'status': 'connection_error',
-                            'message': f"❌ Connection failed.",
-                            'user_action': 'Please try selecting a different network or retry.',
-                            'error_details': error_msg,
-                            'retry': True
-                        }
-                else:
-                    return {
-                        'status': 'ready',
-                        'message': f"📱 Ready for WiFi setup.",
-                        'user_action': 'Select a WiFi network to connect.',
-                    }
-        
+                # No connections and no attempt in flight.
+                return {
+                    'status': 'ready',
+                    'message': f"📱 Ready for WiFi setup.",
+                    'user_action': 'Select a WiFi network to connect.',
+                }
+
+        def _friendly_failure(self, current):
+            """Map a stored failure onto the user-facing status contract.
+
+            Same mapping and the same wire keys as before; it just now reads the
+            stored outcome instead of being reachable only when an interface
+            probe happened to report nothing connected.
+            """
+            error_msg = current.get('error') or current.get('message') or 'Unknown error'
+            state = current.get('status', '')
+            haystack = f"{state} {error_msg}".lower()
+
+            if ('auth_failed' in haystack or 'wrong password' in haystack
+                    or 'incorrect wifi password' in haystack or 'authentication' in haystack):
+                return {
+                    'status': 'auth_failed',
+                    'message': f"❌ Incorrect WiFi password.",
+                    'user_action': 'Please double-check your password and try again.',
+                    'error_details': error_msg,
+                    'retry': True
+                }
+            if 'network_not_found' in haystack or 'not found' in haystack:
+                return {
+                    'status': 'network_not_found',
+                    'message': f"❌ WiFi network not found.",
+                    'user_action': 'Please check the network name or try refreshing the list.',
+                    'error_details': error_msg,
+                    'retry': True
+                }
+            if 'connection_timeout' in haystack or 'timeout' in haystack:
+                return {
+                    'status': 'connection_timeout',
+                    'message': f"❌ Connection timed out.",
+                    'user_action': 'Please check signal strength and try again.',
+                    'error_details': error_msg,
+                    'retry': True
+                }
+            if 'dhcp' in haystack or 'ip address' in haystack or 'network_error' in haystack:
+                return {
+                    'status': 'network_error',
+                    'message': f"❌ Network configuration failed.",
+                    'user_action': 'Check your router settings and try again.',
+                    'error_details': error_msg,
+                    'retry': True
+                }
+            return {
+                'status': 'connection_error',
+                'message': f"❌ Connection failed.",
+                'user_action': 'Please try selecting a different network or retry.',
+                'error_details': error_msg,
+                'retry': True
+            }
+
         def _get_wifi_status(self):
-            """Get detailed WiFi status"""
+            """Live wlan0 state, via the Supervisor API.
+
+            This used to shell out to `wpa_cli -i wlan0 status` and require
+            `wpa_state=COMPLETED`. Under Home Assistant OS, NetworkManager owns
+            wlan0 with its own supplicant on the host, and the add-on container
+            cannot reach that control socket: `host_network` shares the network
+            namespace, not the mount namespace, and the only mapped paths are
+            `config` and `ssl`, so /var/run/wpa_supplicant is the empty
+            directory the Dockerfile created. `wpa_cli` therefore never reported
+            COMPLETED, the 'connected' branches were unreachable, and iOS — which
+            polls this read — could never see success. It sat on "Connecting"
+            until its budget expired.
+
+            The Supervisor API is the same source the connection path already
+            trusts, so this now agrees with it by construction.
+            """
             try:
-                result = subprocess.run(['wpa_cli', '-i', 'wlan0', 'status'], capture_output=True, text=True)
-                if 'wpa_state=COMPLETED' in result.stdout:
-                    # Get IP address
-                    ip_result = subprocess.run(['ip', 'addr', 'show', 'wlan0'], capture_output=True, text=True)
-                    ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)', ip_result.stdout)
-                    ip_address = ip_match.group(1) if ip_match else None
-                    
-                    # Get SSID
-                    ssid_match = re.search(r'ssid=(.+)', result.stdout)
-                    ssid = ssid_match.group(1) if ssid_match else None
-                    
-                    # Test internet connectivity
-                    ping_result = subprocess.run(['ping', '-c', '1', '-W', '3', '8.8.8.8'], capture_output=True)
-                    internet_access = ping_result.returncode == 0
-                    
-                    return {
-                        'connected': True,
-                        'ip': ip_address,
-                        'ssid': ssid,
-                        'internet_access': internet_access
-                    }
-                else:
+                supervisor = get_supervisor()
+                if supervisor is None:
                     return {'connected': False}
-            except Exception:
+
+                status = supervisor.get_wlan0_status()
+                if not status or not status.get('connected'):
+                    return {'connected': False}
+
+                addresses = status.get('ipv4', {}).get('address', [])
+                ip_address = addresses[0].split('/')[0] if addresses else None
+                if not ip_address:
+                    # Associated but no address yet: not usable, so not
+                    # "connected" as far as the app is concerned.
+                    return {'connected': False}
+
+                return {
+                    'connected': True,
+                    'ip': ip_address,
+                    'ssid': status.get('wifi', {}).get('ssid'),
+                }
+            except Exception as e:
+                logger.debug(f"wlan0 status unavailable: {e}")
                 return {'connected': False}
         
         def _get_ethernet_status(self):
@@ -2175,43 +2585,110 @@ def main():
     # Check if we're in auto-reconnection mode
     auto_reconnect = os.getenv('WIFI_AUTO_RECONNECT', 'false').lower() == 'true'
 
+    def auto_reconnect_worker():
+        """Reconnect to the saved network in the background.
+
+        This used to run inline, before start_service(). Because start_service()
+        blocks on the GLib main loop, up to 10 attempts of (connect timeout +
+        10 s sleep) had to finish before the hub began advertising — several
+        minutes during which the hub was NOT discoverable. That is precisely the
+        situation where a user needs to onboard it: the saved network is gone
+        (router replaced, moved house), so every attempt is doomed and the hub
+        is unreachable exactly when it must be reachable.
+
+        Running here instead means BLE comes up immediately. WIFI_OP_LOCK inside
+        connect_to_network keeps this from colliding with an app-driven attempt,
+        and PROVISIONING lets us stand down the moment the app takes over.
+        """
+        config = wifi_controller.load_saved_config()
+        if not (config and config.get('ssid')):
+            logger.warning("No valid saved config for auto-reconnection")
+            set_led_status('ble_advertising', force=True)
+            return
+
+        logger.info(f"🔄 Attempting auto-reconnection to: {config['ssid']}")
+        set_led_status('wifi_connecting')  # Solid red during reconnection
+
+        # Retries never stop: a hub with a saved network stays on solid red until
+        # that network comes back, however long that takes. It is not stuck
+        # meanwhile — BLE advertising is already up, so the app can onboard it to
+        # a different network at any point, and doing so stands this thread down
+        # for good.
+        assoc_timeout, dhcp_timeout = 15, 20
+        retry_gap = 10
+
+        def stand_down() -> bool:
+            """True if something has taken over and we must stop, for good.
+
+            Once the user has driven provisioning from the app, or reset the hub,
+            the saved network is no longer what they want — so this thread must
+            not keep pulling the LED back to solid red behind them.
+            """
+            if PROVISIONING.is_set() or APP_PROVISIONED.is_set():
+                logger.info("🛑 App-driven provisioning took over - standing down auto-reconnect")
+                return True
+            if FACTORY_RESET.is_set():
+                logger.info("🛑 Factory reset performed - standing down auto-reconnect")
+                return True
+            return False
+
+        def sleep_unless_taken_over(seconds: int) -> bool:
+            """Sleep in 1s slices; True if we must stop."""
+            for _ in range(seconds):
+                if stand_down():
+                    return True
+                time.sleep(1)
+            return False
+
+        def try_once(attempt_label: str) -> bool:
+            """One attempt. True if connected (LED already updated)."""
+            logger.info(f"Connection attempt {attempt_label}")
+            result = wifi_controller.connect_to_network(
+                config['ssid'],
+                config.get('password', ''),
+                # Reconnecting with credentials read from disk: saving them back
+                # is pointless, and would undo a factory reset that removed them.
+                persist=False,
+                assoc_timeout=assoc_timeout,
+                dhcp_timeout=dhcp_timeout,
+            )
+            if result.get('status') == 'connected':
+                logger.info("✅ Auto-reconnection successful")
+                # Force: releases the higher-ranked 'wifi_connecting' so the
+                # steady-state monitor can take the LED back over.
+                # Ethernet shows green by itself via the overlay; the base state
+                # is just "connected over WiFi".
+                if not FACTORY_RESET.is_set():
+                    set_led_status('wifi_connected', force=True)
+                return True
+            logger.warning(f"Attempt {attempt_label} failed: {result.get('error', 'Unknown error')}")
+            return False
+
+        attempt = 0
+        while True:
+            if stand_down():
+                return
+            attempt += 1
+            if try_once(str(attempt)):
+                return
+            # LED deliberately stays on solid red: the hub IS still reconnecting.
+            if sleep_unless_taken_over(retry_gap):
+                return
+
     if auto_reconnect:
         logger.info("🔄 Auto-reconnection mode detected")
-        # Handle Wi-Fi auto-reconnection
-        config = wifi_controller.load_saved_config()
-
-        if config and config.get('ssid'):
-            logger.info(f"🔄 Attempting auto-reconnection to: {config['ssid']}")
-            set_led_status('wifi_connecting')  # Solid red during reconnection
-
-            # Attempt connection with persistent retry
-            max_attempts = 10
-            for attempt in range(1, max_attempts + 1):
-                logger.info(f"Connection attempt {attempt}/{max_attempts}")
-
-                result = wifi_controller.connect_to_network(
-                    config['ssid'],
-                    config.get('password', '')
-                )
-
-                if result.get('status') == 'connected':
-                    logger.info("✅ Auto-reconnection successful")
-                    set_led_status('wifi_connected')
-                    break
-                else:
-                    logger.warning(f"Attempt {attempt} failed: {result.get('message', 'Unknown error')}")
-                    if attempt < max_attempts:
-                        time.sleep(10)  # Wait before retry
-            else:
-                logger.error("❌ Auto-reconnection failed - starting fresh setup")
-                set_led_status('ble_advertising')  # Fall back to BLE advertising
-        else:
-            logger.warning("No valid saved config for auto-reconnection")
-            set_led_status('ble_advertising')
+        set_led_status('wifi_connecting')
+        threading.Thread(
+            target=auto_reconnect_worker,
+            name='auto-reconnect',
+            daemon=True,
+        ).start()
+        logger.info("🔄 Auto-reconnect running in background - BLE starts immediately")
     else:
         logger.info("🚀 Fresh setup mode - starting BLE advertising")
         set_led_status('ble_advertising')  # Blinking red for fresh setup
-    
+
+
     # Set up signal handlers
     def signal_handler(signum, frame):
         logger.info("📴 Received shutdown signal, stopping service...")
@@ -2221,6 +2698,9 @@ def main():
     def wifi_reset_handler(signum, frame):
         """Handle WiFi reset signal from button monitor"""
         logger.info("🔄 Received WiFi reset signal from button monitor")
+        # Latch first: this stops the background auto-reconnect thread from
+        # re-saving the credentials the reset just deleted.
+        FACTORY_RESET.set()
         try:
             # Reset WiFi state in BLE service
             if hasattr(ble_service, 'service_manager') and ble_service.service_manager:
@@ -2231,8 +2711,9 @@ def main():
                 logger.info("✅ BLE service WiFi state reset")
 
             logger.info("📱 BLE service ready for new WiFi configuration")
-            # Reset LED to blinking red after reset (no network)
-            set_led_status('booting')  # Blinking red - back to setup mode
+            # Release the reset indication and go back to plain blinking red.
+            # Forced, because 'factory_reset' deliberately outranks this.
+            set_led_status('ble_advertising', force=True)
 
         except Exception as e:
             logger.error(f"❌ Error handling WiFi reset: {e}")
@@ -2240,6 +2721,10 @@ def main():
     def factory_reset_handler(signum, frame):
         """Handle factory reset signal from button monitor"""
         logger.info("🚨 FACTORY RESET SIGNAL RECEIVED from button monitor")
+        # Latch first: this stops the background auto-reconnect thread from
+        # re-saving the credentials the reset just deleted, which is what made a
+        # reset hub come back up in reconnect mode (solid red) after a power cycle.
+        FACTORY_RESET.set()
         try:
             # Reset WiFi state in BLE service
             if hasattr(ble_service, 'service_manager') and ble_service.service_manager:
@@ -2255,8 +2740,10 @@ def main():
 
             logger.info("🔄 FACTORY RESET: Fresh boot sequence initiated")
             logger.info("📱 BLE service ready for fresh WiFi onboarding")
-            # Reset LED to blinking red after factory reset (fresh boot state)
-            set_led_status('booting')  # Blinking red - fresh boot, ready for setup
+            # Release the reset indication: back to plain blinking red, which is
+            # the truthful state (ready to onboard). Forced, because
+            # 'factory_reset' deliberately outranks this.
+            set_led_status('ble_advertising', force=True)
 
         except Exception as e:
             logger.error(f"❌ Error handling factory reset: {e}")
@@ -2381,7 +2868,6 @@ def main():
                             except Exception as e:
                                 logger.error(f"❌ SCENARIO 2: Failed to setup dual network routing: {e}")
                                 logger.error(f"❌ SCENARIO 2: Exception type: {type(e).__name__}")
-                                import traceback
                                 logger.error(f"❌ SCENARIO 2: Traceback: {traceback.format_exc()}")
 
                                 # Fallback: basic Ethernet setup
@@ -2436,7 +2922,6 @@ def main():
     logger.info("🚥 Setting initial LED status...")
     update_network_led_status()  # This will set correct LED status immediately
 
-    import threading
     monitor_thread = threading.Thread(target=network_monitor, daemon=True)
     monitor_thread.start()
     logger.info("🔍 Network monitoring started immediately for consistent LED behavior")

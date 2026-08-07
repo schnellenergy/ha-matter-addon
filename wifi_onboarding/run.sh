@@ -44,7 +44,7 @@ export GPIO_PIN LED_RED_PIN LED_GREEN_PIN LED_BLUE_PIN ENABLE_LED ENABLE_BUTTON 
 # Initial cleanup and setup
 echo "[INFO] Cleaning up previous runs..."
 pkill -f python 2>/dev/null || true
-rm -f /tmp/led_status /tmp/wifi_reset /tmp/button_monitor.log /tmp/button_monitor.fifo
+rm -f /tmp/led_status /tmp/led_events /tmp/led_ethernet /tmp/wifi_reset /tmp/button_monitor.log /tmp/button_monitor.fifo
 
 # PRODUCTION FIX: Clean up GPIO resources to prevent 'GPIO busy' errors
 echo "[INFO] 🧹 Cleaning up GPIO resources..."
@@ -241,6 +241,8 @@ if [ -f "$WIFI_CONFIG_FILE" ]; then
 
     else
         echo "[INFO] ❌ Invalid Wi-Fi configuration (no SSID)"
+        echo "[INFO] File size: $(wc -c < "$WIFI_CONFIG_FILE" 2>/dev/null) bytes"
+        echo "[INFO] Raw contents: $(head -c 200 "$WIFI_CONFIG_FILE" 2>/dev/null)"
         echo "[INFO] Removing invalid configuration..."
         rm -f "$WIFI_CONFIG_FILE"
 

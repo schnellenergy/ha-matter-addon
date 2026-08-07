@@ -113,60 +113,117 @@ class SupervisorAPI:
             logger.error(f"❌ Error scanning WiFi networks: {e}")
             return None
     
-    def configure_wifi(self, ssid: str, password: str) -> bool:
+    # NetworkManager errors that mean "stale internal state", not "bad
+    # credentials". They happen when a profile was just torn down and NM is still
+    # settling — retrying after a pause clears them, whereas failing outright
+    # leaves the user unable to onboard for minutes after a reset.
+    # Genuinely transient: NetworkManager has not finished releasing a previous
+    # profile. Retrying after a pause clears these.
+    _TRANSIENT_NM_ERRORS = (
+        'object does not exist',            # stale ActiveConnection D-Bus path
+        'device is not ready',
+        'not managed',
+        'unknown connection',
+    )
+
+    # NetworkManager's way of saying the credentials were rejected.
+    #
+    # "Activating connection failed" was previously treated as transient and
+    # retried three times. That is exactly what a WRONG PASSWORD produces, so a
+    # rejected password took ~3 x (7s + 4s) before being reported — and was then
+    # reported as a generic network error rather than a bad password. It fails
+    # fast and honestly now.
+    _AUTH_NM_ERRORS = (
+        'activating connection failed',
+        'secrets were required',
+        'no secrets provided',
+        'invalid psk',
+        'psk',
+    )
+
+    def configure_wifi(self, ssid: str, password: str, max_attempts: int = 3) -> Dict:
         """
-        Configure WiFi connection via HA Supervisor
-        
+        Configure WiFi connection via HA Supervisor.
+
+        Retries transient NetworkManager failures. Right after a network reset NM
+        can reject the activation with "Activating connection failed" or a stale
+        "Object does not exist at path .../ActiveConnection/N" — the interface is
+        fine, NM just has not finished tearing the old profile down. A single
+        attempt turned that into a hard provisioning failure.
+
         Args:
             ssid: WiFi network SSID
             password: WiFi password
-            
+            max_attempts: attempts for transient NM errors
+
         Returns:
-            True if configuration successful, False otherwise
+            {'ok': bool, 'reason': None | 'auth_failed' | 'network_error'}
         """
-        try:
-            logger.info(f"🔧 Configuring WiFi via HA Supervisor: {ssid}")
-            
-            payload = {
-                "ipv4": {
-                    "method": "auto",
-                    "nameservers": []
-                },
-                "ipv6": {
-                    "method": "auto",
-                    "nameservers": []
-                },
-                "wifi": {
-                    "ssid": ssid,
-                    "mode": "infrastructure",
-                    "auth": "wpa-psk",
-                    "psk": password
-                },
-                "enabled": True
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/network/interface/wlan0/update",
-                headers=self.headers,
-                json=payload,
-                timeout=60  # Connection can take time
-            )
-            
-            if response.status_code == 200:
-                logger.info(f"✅ WiFi configuration sent to HA Supervisor")
-                return True
-            else:
+        payload = {
+            "ipv4": {
+                "method": "auto",
+                "nameservers": []
+            },
+            "ipv6": {
+                "method": "auto",
+                "nameservers": []
+            },
+            "wifi": {
+                "ssid": ssid,
+                "mode": "infrastructure",
+                "auth": "wpa-psk",
+                "psk": password
+            },
+            "enabled": True
+        }
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.info(
+                    f"🔧 Configuring WiFi via HA Supervisor: {ssid} "
+                    f"(attempt {attempt}/{max_attempts})")
+
+                response = requests.post(
+                    f"{self.base_url}/network/interface/wlan0/update",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=60  # Connection can take time
+                )
+
+                if response.status_code == 200:
+                    logger.info(f"✅ WiFi configuration sent to HA Supervisor")
+                    return {'ok': True, 'reason': None}
+
+                body = (response.text or '').lower()
                 logger.error(f"❌ Failed to configure WiFi: HTTP {response.status_code}")
                 logger.error(f"   Response: {response.text}")
-                return False
-                
-        except requests.exceptions.Timeout:
-            logger.error("❌ Timeout configuring WiFi")
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error configuring WiFi: {e}")
-            return False
-    
+
+                # Rejected credentials: report at once, no retry. Retrying a
+                # wrong password only makes the user wait.
+                if any(marker in body for marker in self._AUTH_NM_ERRORS):
+                    logger.error("❌ NetworkManager rejected the credentials")
+                    return {'ok': False, 'reason': 'auth_failed'}
+
+                if (not any(m in body for m in self._TRANSIENT_NM_ERRORS)
+                        or attempt == max_attempts):
+                    return {'ok': False, 'reason': 'network_error'}
+
+                # Give NM a moment to finish releasing the previous profile.
+                logger.warning(
+                    "⚠️ NetworkManager is still settling after the previous "
+                    "profile — waiting 4s and retrying")
+                time.sleep(4)
+
+            except requests.exceptions.Timeout:
+                logger.error("❌ Timeout configuring WiFi")
+                return {'ok': False, 'reason': 'network_error'}
+            except Exception as e:
+                logger.error(f"❌ Error configuring WiFi: {e}")
+                return {'ok': False, 'reason': 'network_error'}
+
+        return {'ok': False, 'reason': 'network_error'}
+
+
     def disconnect_wifi(self) -> bool:
         """
         Disconnect WiFi (network reset)
@@ -210,7 +267,17 @@ class SupervisorAPI:
         except Exception as e:
             logger.error(f"❌ Error disconnecting WiFi: {e}")
             return False
-    
+
+    # NOTE: `enabled: False` is what actually forgets the network. Home Assistant
+    # Supervisor deletes the interface's connection settings when an update
+    # disables it, so this removes the saved Wi-Fi from Home Assistant itself —
+    # not merely switching the radio off.
+    #
+    # A previous revision replaced this with `enabled: True` and no `wifi` block,
+    # on the assumption that omitting `wifi` meant "forget it". That assumption
+    # was wrong: an omitted field is left UNCHANGED, so the saved network would
+    # have survived every reset. Reverted, and kept as-is deliberately.
+
     def get_wlan0_status(self) -> Optional[Dict]:
         """
         Get wlan0 interface status
@@ -285,6 +352,94 @@ class SupervisorAPI:
         logger.error(f"❌ WiFi connection timeout after {timeout}s")
         return None
     
+    def wait_for_connection_phased(
+        self,
+        expected_ssid: str,
+        assoc_timeout: int = 20,
+        dhcp_timeout: int = 40,
+    ) -> Dict:
+        """Wait for wlan0 in two distinct phases and report which one failed.
+
+        `wait_for_wifi_connection` collapses association and DHCP into one
+        timeout, so every failure looked identical and got reported to the app
+        as "re-enter your password" — including slow-DHCP failures on a
+        perfectly correct password. Supervisor already exposes the two facts
+        separately (`connected` and `ipv4.address`), so we can separate them:
+
+          phase 1  not associated within assoc_timeout  -> wrong passphrase
+          phase 2  associated but no IPv4 within dhcp_timeout -> DHCP/router
+
+        Splitting also lets phase 1 stay short, so a genuinely wrong password
+        is reported in ~20 s instead of waiting out the full budget.
+
+        Returns {'ip': str|None, 'reason': None|'auth_failed'|'no_ip',
+                 'ssid': str|None}.
+        """
+        logger.info(
+            f"⏳ Waiting for WiFi: association ≤{assoc_timeout}s, then IP ≤{dhcp_timeout}s"
+        )
+
+        associated = False
+        ssid = None
+
+        # Phase 1 — association WITH THE REQUESTED NETWORK.
+        #
+        # Checking only `connected` is not enough. When a hub is already on a
+        # network and is then given wrong credentials, NetworkManager keeps the
+        # previous connection up while the new one fails — so wlan0 still reports
+        # connected, still holds its old IP, and a bare `connected` check reports
+        # SUCCESS for a password that was rejected. That is what turned the LED
+        # blue on a wrong password. Requiring the SSID to be the one we asked for
+        # makes the check mean what it says.
+        assoc_deadline = time.time() + assoc_timeout
+        while time.time() < assoc_deadline:
+            status = self.get_wlan0_status()
+            current_ssid = (status or {}).get("wifi", {}).get("ssid")
+            if status and status.get("connected") and current_ssid == expected_ssid:
+                associated = True
+                ssid = current_ssid
+                logger.info(f"✅ Associated with '{ssid}' — waiting for IP address")
+
+                # Association and DHCP often complete together; if the address
+                # is already present, skip straight out.
+                addresses = status.get("ipv4", {}).get("address", [])
+                if addresses:
+                    ip = addresses[0].split("/")[0]
+                    logger.info(f"✅ WiFi connected with IP: {ip}")
+                    return {'ip': ip, 'reason': None, 'ssid': ssid}
+                break
+            time.sleep(1)
+
+        if not associated:
+            logger.error(
+                f"❌ wlan0 did not join '{expected_ssid}' within {assoc_timeout}s — "
+                "treating as authentication failure"
+            )
+            return {'ip': None, 'reason': 'auth_failed', 'ssid': None}
+
+        # Phase 2 — DHCP.
+        dhcp_deadline = time.time() + dhcp_timeout
+        while time.time() < dhcp_deadline:
+            status = self.get_wlan0_status()
+            current_ssid = (status or {}).get("wifi", {}).get("ssid")
+            if status and status.get("connected") and current_ssid == expected_ssid:
+                addresses = status.get("ipv4", {}).get("address", [])
+                if addresses:
+                    ip = addresses[0].split("/")[0]
+                    logger.info(f"✅ WiFi connected with IP: {ip}")
+                    return {'ip': ip, 'reason': None, 'ssid': ssid}
+            else:
+                # Dropped off the requested network after initially joining it —
+                # an authentication problem, not a DHCP one.
+                logger.error(
+                    f"❌ wlan0 left '{expected_ssid}' while waiting for IP "
+                    f"(now on {current_ssid!r})")
+                return {'ip': None, 'reason': 'auth_failed', 'ssid': ssid}
+            time.sleep(1)
+
+        logger.error(f"❌ Associated but no IPv4 address within {dhcp_timeout}s")
+        return {'ip': None, 'reason': 'no_ip', 'ssid': ssid}
+
     def get_ethernet_status(self) -> Optional[Dict]:
         """
         Get Ethernet interface status (eth0 or end0)
@@ -296,12 +451,19 @@ class SupervisorAPI:
             network_info = self.get_network_info()
             if not network_info:
                 return None
-            
-            for interface in network_info.get("interfaces", []):
+
+            # Same two response shapes get_wlan0_status already handles; this
+            # method only checked the un-nested one, so on a Supervisor build
+            # that nests under `data` it always reported "no ethernet".
+            interfaces = network_info.get('data', {}).get('interfaces', [])
+            if not interfaces:
+                interfaces = network_info.get('interfaces', [])
+
+            for interface in interfaces:
                 if interface.get("interface") in ["eth0", "end0"]:
                     if interface.get("connected"):
                         return interface
-            
+
             return None
             
         except Exception as e:
