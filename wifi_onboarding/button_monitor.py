@@ -20,6 +20,8 @@ import threading
 from pathlib import Path
 from contextlib import contextmanager
 
+import led_states
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -30,16 +32,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def set_led_status(status: str):
-    """Helper function to control the LED by writing to a status file."""
+def set_led_status(status: str, force: bool = False):
+    """Request an LED state.
+
+    Uses the shared contract so this process can't write a state the controller
+    doesn't know (it previously did no validation at all, while the BLE service
+    silently rewrote unknown names to 'error' — the same mistake behaved three
+    different ways). Reset states outrank the periodic network monitor, so a
+    long-press indication can no longer be erased half a second later.
+    """
     try:
-        with open("/tmp/led_status", 'w') as f:
-            f.write(status)
-        logger.info(f"🚥 LED status set to: {status}")
+        if not led_states.write_request(status, force):
+            logger.error(f"🚥 Refusing to write unknown LED state: '{status}'")
+            return
+        logger.info(f"🚥 LED status set to: {status}{' (forced)' if force else ''}")
     except Exception as e:
         logger.error(f"Failed to write LED status: {e}")
 
 class ButtonMonitor:
+    # How long the red/blue refusal is shown before the real state returns.
+    # A new 5-second hold during this window cancels it and starts a fresh reset.
+    REFUSED_HOLD_SECONDS = 20
+
     def __init__(self, gpio_pin=17, hold_time=5, debounce_time=0.05):
         self.gpio_pin = gpio_pin
         self.hold_time = hold_time
@@ -54,6 +68,8 @@ class ButtonMonitor:
         self.press_start_time = 0
         self.is_pressed_state = False
         self.monitor_thread = None
+        # When the red/blue refusal indication should end (None = not refusing).
+        self._refused_until = None
 
     def run_command(self, cmd, timeout=10):
         """Run shell command safely"""
@@ -101,7 +117,6 @@ class ButtonMonitor:
         logger.info(f"Initializing GPIO pin {self.gpio_pin}")
         
         # Debug information
-        import sys
         logger.info(f"Python executable: {sys.executable}")
         logger.info(f"Python version: {sys.version}")
 
@@ -172,7 +187,6 @@ class ButtonMonitor:
 
         # Method 2: Try gpiozero with same pin factory as LED tests
         try:
-            import os
             os.environ['GPIOZERO_PIN_FACTORY'] = 'native'
             from gpiozero import Button
             logger.info("✅ gpiozero import successful")
@@ -305,6 +319,17 @@ class ButtonMonitor:
             while self.running:
                 current_pressed = self.is_button_pressed()
                 current_time = time.time()
+
+                # Refusal window over -> hand the LED back. Releasing to the
+                # floor lets the network monitor restate reality on its next
+                # tick, which for an untouched hub means going straight back to
+                # solid blue (or green, if a cable is in).
+                if self._refused_until is not None and current_time >= self._refused_until:
+                    self._refused_until = None
+                    logger.info(
+                        f"🔘 Refusal shown for {self.REFUSED_HOLD_SECONDS}s - "
+                        "restoring the hub's real state")
+                    set_led_status('ble_advertising', force=True)
                 
                 # Log button state every 10 seconds for debugging
                 if current_time - last_status_log > 10:
@@ -322,9 +347,12 @@ class ButtonMonitor:
                     
                     if current_pressed:
                         logger.info("🚨 FILE-BASED RESET TRIGGERED!")
-                        self.reset_wifi_config()
-                        break
-                    
+                        if self.reset_wifi_config():
+                            break
+                        # Refused (no route to the cloud record) — keep
+                        # monitoring so the user can retry.
+                        logger.info("🔘 Reset refused - still monitoring for retry")
+
                     time.sleep(1)
                     continue
                 
@@ -347,8 +375,15 @@ class ButtonMonitor:
                     # Trigger at hold time
                     if hold_counter >= self.hold_time:
                         logger.info(f"🚨 FACTORY RESET: Long press detected ({self.hold_time}s)!")
-                        self.reset_wifi_config()
-                        break
+                        if self.reset_wifi_config():
+                            break
+                        # Refused (no route to the cloud record) — keep
+                        # monitoring so the user can retry after connecting the
+                        # hub to the internet. Require a fresh press.
+                        logger.info("🔘 Reset refused - still monitoring for retry")
+                        hold_counter = 0
+                        was_pressed = current_pressed
+                        continue
                 else:
                     if was_pressed:
                         logger.info(f"🔘 BUTTON RELEASED: GPIO {self.gpio_pin} after {hold_counter}s")
@@ -381,45 +416,101 @@ class ButtonMonitor:
             logger.error(f"GPIO reinitialization failed: {e}")
             return False
 
-    def reset_wifi_config(self):
-        """Completely reset WiFi configuration while preserving ethernet and button monitor"""
-        logger.info("🚨 RESET TRIGGERED - Resetting WiFi configuration...")
-        
-        # Immediate LED feedback
+    def get_mac_address(self):
+        """Hub MAC, preferring wlan0 (same interface and format the BLE service
+        and the QR code use, so the Firestore document id matches).
+
+        Read locally rather than importing improved_ble_service, which executed
+        that entire module — D-Bus imports and all — just to reach one helper,
+        on the reset path of all places.
+        """
+        for interface in ('wlan0', 'eth0', 'end0'):
+            try:
+                with open(f'/sys/class/net/{interface}/address', 'r') as f:
+                    mac = f.read().strip().upper()
+                if mac:
+                    logger.info(f"📍 MAC Address ({interface}): {mac}")
+                    return mac
+            except Exception:
+                continue
+        logger.error("❌ Could not read MAC address from any interface")
+        return None
+
+    def _clear_cloud_ip(self):
+        """Delete the hub's published IP, verified. Returns True only if gone.
+
+        This gates the whole reset. The app's "Set Up Network Again" prompt is
+        driven entirely by `home_ip` disappearing, so a reset that clears the
+        hub locally but leaves the cloud record behind produces the worst
+        outcome available: the hub is blank and waiting to be onboarded, while
+        the app still believes it is configured and reachable.
+
+        Ordering is critical and unforgiving — the very next step disconnects
+        WiFi, after which there is no route to the cloud at all. So this must
+        succeed *before* anything else is touched, or not at all.
+        """
         try:
-            set_led_status('factory_reset')  # Blinking red to indicate reset in progress
-        except Exception:
-            pass
-        
-        # 1. Delete IP from Firestore FIRST (while network is still available)
-        try:
-            # Import here to avoid issues if Firestore not available
             from firestore_helper import FirestoreHelper
-            
-            # Get MAC address
-            import sys
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from improved_ble_service import get_mac_address
-            
-            mac_address = get_mac_address()
-            if mac_address:
-                logger.info(f"🔄 Deleting IP from Firestore for MAC: {mac_address}")
-                firestore_helper = FirestoreHelper()
-                success = firestore_helper.delete_hub_ip(mac_address)
-                if success:
-                    logger.info(f"✅ IP deleted from Firestore - app will detect network reset")
-                else:
-                    logger.warning(f"⚠️ Failed to delete IP from Firestore")
-            else:
-                logger.warning("⚠️ Could not get MAC address, IP not deleted from Firestore")
         except Exception as e:
-            logger.warning(f"⚠️ Error deleting IP from Firestore: {e}")
-            logger.warning("   Network reset will continue, but app may not detect it immediately")
-        
+            logger.error(f"❌ Firestore helper unavailable: {e}")
+            return False
+
+        mac_address = self.get_mac_address()
+        if not mac_address:
+            logger.error("❌ No MAC address - cannot identify this hub's cloud record")
+            return False
+
+        try:
+            logger.info(f"🔄 Deleting IP from Firestore for MAC: {mac_address}")
+            helper = FirestoreHelper()
+            if not helper.initialized:
+                logger.error("❌ Firestore not initialized - no route to the cloud record")
+                return False
+            return helper.delete_hub_ip(mac_address)
+        except Exception as e:
+            logger.error(f"❌ Error deleting IP from Firestore: {e}")
+            return False
+
+    def reset_wifi_config(self):
+        """Reset WiFi configuration, preserving ethernet and the button monitor.
+
+        Returns True if the reset completed, False if it was refused.
+
+        A reset is refused when the hub cannot reach the cloud to clear its
+        published IP — see _clear_cloud_ip. The hub is left exactly as it was so
+        the user can retry (plugging in an Ethernet cable is the recovery path),
+        and the LED says so rather than pretending the reset worked.
+        """
+        logger.info("🚨 RESET TRIGGERED - Resetting WiFi configuration...")
+
+        # A retry supersedes any refusal still being shown.
+        self._refused_until = None
+
+        # Blinking red: work in progress. Outranks the periodic network
+        # monitor, which used to overwrite this within 500 ms so a long-press
+        # showed a red flicker and then went straight back to solid green.
+        set_led_status('factory_reset')
+
+        # 1. Clear the published IP FIRST, and refuse to go further without it.
+        if not self._clear_cloud_ip():
+            logger.error("❌ RESET REFUSED: could not clear the hub's published IP")
+            logger.error("   The hub has been left untouched and is still usable.")
+            logger.error("   Connect the hub to the internet (an Ethernet cable is")
+            logger.error("   enough) and hold the button again.")
+            set_led_status('reset_refused', force=True)
+            # Deadline, NOT sleep. Sleeping here blocked the button for the whole
+            # window, so a user watching the refusal could not immediately retry —
+            # which is exactly when they want to. The loop below keeps polling the
+            # button and clears this when it expires.
+            self._refused_until = time.time() + self.REFUSED_HOLD_SECONDS
+            return False
+
+        logger.info("✅ Cloud IP cleared and verified - proceeding with reset")
+
+
         # 2. CRITICAL FIX: Disconnect WiFi via Supervisor API (like HA UI "Reset Configuration")
         logger.info("🔄 Disconnecting WiFi via Home Assistant Supervisor API...")
         try:
-            import sys
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from supervisor_api import SupervisorAPI
             
@@ -489,6 +580,7 @@ class ButtonMonitor:
         logger.info("🎉 WiFi reset complete - configuration cleared")
         logger.info("📱 Connect to 'SMASH-XXXX' via BLE to reconfigure")
         logger.info("🌐 Ethernet connections remain active and accessible")
+        return True
 
     def monitor_button(self):
         """Main button monitoring loop with threading"""

@@ -1,3 +1,4 @@
+
 # PRODUCTION FIX: Use Home Assistant's Python version to match runtime
 # Home Assistant OS uses Python 3.13, so we need to match that
 FROM python:3.13-slim
@@ -151,6 +152,7 @@ COPY improved_ble_service.py /improved_ble_service.py
 COPY supervisor_api.py /supervisor_api.py
 COPY firestore_helper.py /firestore_helper.py
 COPY firebase-service-account.b64 /firebase-service-account.b64
+COPY led_states.py /led_states.py
 COPY led_controller.py /led_controller.py
 COPY gpio_cleanup.py /gpio_cleanup.py
 COPY device_diagnostics.py /device_diagnostics.py

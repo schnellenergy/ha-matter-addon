@@ -68,13 +68,71 @@ The add-on is configured with `boot: auto` and `startup: before`, so it starts a
 
 Once provisioning succeeds, BLE advertising stops and the hub is no longer discoverable.
 
+**A wrong passphrase is reported within a few seconds, not at the end of the
+connection budget.** NetworkManager answers `Activating connection failed` for
+rejected credentials; that is treated as a credential rejection and returned
+straight away as `auth_failed`, so the app can point at the password field
+instead of showing a generic network error. Only genuinely transient conditions
+(a stale D-Bus path, an interface not yet ready) are retried.
+
+The hub stays discoverable through a failed attempt. The LED returns to the
+normal blinking red and the app can submit new credentials over the same BLE
+link — no power cycle, no re-scan.
+
+**Credentials are written to disk only after the connection is proven**, and
+success requires the interface to be connected *to the SSID that was submitted*.
+A rejected password therefore leaves nothing behind: no config file for the next
+boot to retry forever, and no chance of a stale connection to a different network
+being read as success and shown as solid blue.
+
 ### Factory reset
 
 1. Press and hold the physical button for **5 seconds**.
 2. The LED blinks red to confirm the reset has started.
-3. Wi-Fi is disconnected and the saved configuration is removed.
-4. BLE advertising restarts — the hub is ready for fresh setup.
-5. Ethernet connectivity is preserved throughout.
+3. The hub's published IP is deleted from the cloud and the deletion is verified.
+4. The saved Wi-Fi credentials are forgotten and the local configuration is
+   removed. The wlan0 interface is deliberately left **enabled** — disabling it
+   meant NetworkManager kept its own saved profile (so a reset hub rejoined the
+   old network on the next boot) and could not activate a new one (so the next
+   provisioning attempt failed, even though scanning still worked because
+   `iwlist` bypasses NetworkManager).
+5. BLE advertising restarts — the hub is ready for fresh setup.
+6. Ethernet connectivity is preserved throughout.
+
+**The reset requires internet access and will refuse without it.** Step 3 must
+succeed before anything else is touched, because step 4 removes the only route
+to the cloud — there is no second chance afterwards. A reset that cleared the hub
+but left its IP record behind would leave the hub blank and waiting while the app
+still believed it was configured and reachable, which is the worst of both
+states.
+
+If the hub cannot reach the cloud, the reset is refused: the hub is left exactly
+as it was, and the LED alternates **red/blue** for 20 seconds to say so rather
+than implying success. Ethernet counts as internet, so the recovery for a hub
+whose Wi-Fi network no longer exists is:
+
+1. Connect an Ethernet cable.
+2. Hold the button for 5 seconds again.
+
+The button stays live during those 20 seconds — a fresh 5-second hold cancels the
+refusal and starts a new reset immediately, rather than being ignored until the
+indication times out.
+
+### Boot with a saved network
+
+On a hub that has been provisioned, `run.sh` starts the add-on in reconnect mode.
+The LED goes **solid red** and stays that way until the hub actually joins —
+however long that takes. It never gives up: attempts repeat every 10 s
+(association budget 15 s, DHCP 20 s) until the network comes back.
+
+**Reconnection runs in the background, so BLE comes up immediately** —
+advertising is live roughly 1.5 s after start. This matters: reconnection used to
+run inline before the BLE service started, which left the hub undiscoverable for
+up to ~6.7 minutes on boot — exactly the situation where a user needs to onboard
+it, because the saved network is the thing that is gone.
+
+Once connected the LED goes solid blue and the hub's IP is republished, so the
+app finds it at its new address without any user action.
 
 ## BLE GATT Interface
 
@@ -92,16 +150,50 @@ Network scan results are paginated (three networks per page) and responses are s
 
 ## LED Status Indicators
 
-| Color | Pattern | Meaning |
-|-------|---------|---------|
-| Red | Blinking | Booting / BLE advertising / factory reset / error |
-| Red | Solid | Reconnecting to saved Wi-Fi |
-| Green | Solid | Ethernet connected (also shown for dual network) |
-| Green | Blinking | Ethernet connected, no internet |
-| Blue | Solid | Wi-Fi connected with internet |
-| Blue | Blinking | Wi-Fi connected, no internet |
-| Red + Blue | Alternating | Setup in progress |
-| Off | — | Shutdown |
+**Ethernet is an overlay, not a state.** Whenever a cable is connected the LED is
+solid green, whatever else is happening — provisioning, a factory reset, a boot
+reconnect. None of that logic is affected; only what the LED shows. Unplug the
+cable and the LED immediately reveals the state the hub was in all along.
+
+Underneath the overlay, exactly one state is shown at a time. States are ranked
+and `led_controller.py` is the sole arbiter, so a lower-ranked writer can never
+overwrite a higher-ranked active state.
+
+| Colour | Pattern | Meaning | Rank |
+|--------|---------|---------|------|
+| Green | Solid | **Ethernet connected** — overrides everything below | overlay |
+| Red | Blink (500 ms) | Factory reset in progress | highest |
+| Red + Blue | Alternating (250 ms) | **Reset refused** — no internet, so the cloud IP could not be cleared. Held 20 s, then the real state returns | highest |
+| Red | **Fast** blink (150 ms) | Provisioning — credentials received, connecting | high |
+| Red | Solid | Reconnecting to the saved Wi-Fi. Persists **until it connects**, however long that takes | medium |
+| Blue | Solid | Provisioned and connected over Wi-Fi | steady |
+| Red | Blink (500 ms) | Ready to onboard / BLE advertising | lowest |
+| Off | — | Shutdown | — |
+
+**Fast blink means exactly one thing:** a Wi-Fi provisioning attempt is in
+flight. Every attempt shows it, however many times credentials are sent; success
+goes solid blue, failure goes back to the normal blink.
+
+Blue additionally requires the hub to be **provisioned**. NetworkManager keeps
+its own wlan0 profile which can outlive a factory reset, so "wlan0 connected" is
+not on its own evidence that the hub is set up — after a reset the LED blinks
+red, which is the truthful and actionable state.
+
+### How states reach the controller
+
+Three channels, because they have different loss requirements:
+
+| Channel | Carries | Semantics |
+|---------|---------|-----------|
+| `/tmp/led_status` | routine reports from the 0.5 s network monitor | single slot, last-write-wins — a missed one costs nothing, the next is 500 ms away |
+| `/tmp/led_events` | factory reset, reset refused, provisioning, reconnect, and the releases that end them | **append-only queue, lossless and ordered** |
+| `/tmp/led_ethernet` | Ethernet presence | decides what is *displayed*, never what the hub *is* |
+
+Events cannot share the single slot. The monitor rewrites it twice a second, so
+an event written there can be silently replaced before the controller's 50 ms
+poll reads it. A lost report is harmless; a lost *event* is not — a factory-reset
+indication would never appear, and a lost release would strand the LED on a state
+that outranks everything the monitor can request, permanently.
 
 ## Configuration Options
 
@@ -115,7 +207,7 @@ Network scan results are paginated (three networks per page) and responses are s
 | `led_green_pin` | `23` | Green LED GPIO pin |
 | `led_blue_pin` | `24` | Blue LED GPIO pin |
 | `debug` | `false` | Enable verbose logging |
-| `connection_timeout` | `60` | Wi-Fi connection timeout in seconds (10–300) |
+| `connection_timeout` | `60` | Total Wi-Fi connection budget in seconds (10–300). Split into an association phase (up to 20 s — failing here means a wrong passphrase) and a DHCP phase (the remainder — failing here means a router/DHCP problem). Each phase has a 10 s floor, so values under 20 s behave as 20 s. |
 | `use_static_ip`, `static_ip`, `static_gateway`, `static_dns` | `false` / empty | Reserved for a future release; provisioning currently uses DHCP |
 
 ## Architecture
@@ -126,9 +218,10 @@ Network scan results are paginated (three networks per page) and responses are s
 |-----------|----------------|
 | `improved_ble_service.py` | BLE GATT server and provisioning orchestration (main service) |
 | `button_monitor.py` | Factory-reset button monitoring with multi-backend GPIO support |
-| `led_controller.py` | RGB LED status controller |
+| `led_controller.py` | RGB LED status controller, and the arbiter for LED state |
+| `led_states.py` | Canonical LED state list and ranking, shared by every writer |
 | `supervisor_api.py` | Home Assistant Supervisor network API client |
-| `firestore_helper.py` | Publishes the hub IP for app-side discovery |
+| `firestore_helper.py` | Publishes and clears the hub IP for app-side discovery (verified) |
 
 ### Support utilities
 
@@ -146,8 +239,13 @@ Mobile app (BLE)
 BLE GATT service          credentials received, connection started
     ▼
 Supervisor network API    Wi-Fi profile applied to wlan0
+    │                     └── credentials rejected? → auth_failed returned
+    │                         at once, nothing written, hub stays discoverable
     ▼
-Connectivity check        interface up, IPv4 address assigned
+Connectivity check        associated to the EXPECTED ssid, IPv4 assigned
+    ▼
+Credentials persisted     atomic write + fsync + read-back verify
+    │                     (only now — never before success)
     ▼
 Hub IP published          app locates the hub on the LAN
     ▼
@@ -159,11 +257,14 @@ BLE advertising stops
 ```
 Button held 5 s
     ▼
-Button monitor            reset confirmed, LED signals reset
+Button monitor            reset confirmed, LED blinks red
     ▼
-Hub IP record cleared
+Hub IP record cleared     retried and VERIFIED against the server
+    │                     └── cannot be cleared? → reset REFUSED,
+    │                         hub untouched, LED alternates red/blue
     ▼
-Supervisor API            Wi-Fi disconnected
+Supervisor API            Wi-Fi credentials FORGOTTEN, interface left
+    │                     enabled (no cloud route after this)
     ▼
 Local Wi-Fi config removed
     ▼
@@ -201,6 +302,22 @@ Confirm the SSID is in range and the passphrase is correct; the status character
 ha addons logs local_smash_wifi_onboarding | grep LED
 ```
 Verify the LED wiring matches the configured pins and that the LED is common-cathode.
+
+**Hub is discoverable but the app says the setup service is missing**
+
+The advertisement is written by the kernel, while the GATT service lives in the
+add-on process. If the add-on is not running, the hub can still advertise as
+`SMASH-XXXX` and accept a connection while serving only BlueZ's own services
+(`1800`, `1801`, `180a`, and the LE Audio set `1843`–`184f`) — none of ours. The
+app reports this specifically rather than retrying forever.
+
+```bash
+ha addons info local_smash_wifi_onboarding      # is it actually running?
+ha addons logs local_smash_wifi_onboarding | grep "GATT service registered"
+```
+
+Restarting the add-on re-registers the GATT application; `run.sh` brings `hci0`
+down and up on start, which also clears a stale kernel advertisement.
 
 Enable the `debug` option for verbose logging across all components.
 
