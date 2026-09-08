@@ -6,6 +6,7 @@ RUN apk add --no-cache \
     py3-pip \
     py3-setuptools \
     py3-wheel \
+    py3-grpcio \
     sqlite \
     sqlite-dev \
     curl \
@@ -16,7 +17,9 @@ RUN apk add --no-cache \
     python-socketio \
     eventlet \
     requests \
-    pyyaml
+    pyyaml \
+    PyJWT \
+    cryptography
 
 # Copy application files
 COPY app/ /app/

@@ -19,6 +19,11 @@ from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+from functools import wraps
+import jwt
+import requests
+from cryptography.x509 import load_pem_x509_certificate
+from cryptography.hazmat.backends import default_backend
 
 # Import storage backends
 from database_storage import DatabaseStorage
@@ -42,6 +47,7 @@ ENABLE_WEBSOCKET = str(_cfg('enable_websocket', 'true')).lower() == 'true'
 ENABLE_CORS = str(_cfg('enable_cors', 'true')).lower() == 'true'
 API_KEY = str(_cfg('api_key', ''))
 SECURE_HA_TOKEN = str(_cfg('secure_ha_token', ''))
+FIREBASE_PROJECT_ID = str(_cfg('firebase_project_id', ''))
 
 # Setup logging
 logging.basicConfig(
@@ -63,6 +69,77 @@ if ENABLE_WEBSOCKET:
     socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 else:
     socketio = None
+
+# Cache for Google's public keys
+GOOGLE_PUBLIC_KEYS = {}
+KEYS_EXPIRATION = 0
+
+def get_google_public_keys():
+    global GOOGLE_PUBLIC_KEYS, KEYS_EXPIRATION
+    now = time.time()
+    # Refresh keys if expired
+    if now > KEYS_EXPIRATION:
+        try:
+            resp = requests.get('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com')
+            resp.raise_for_status()
+            GOOGLE_PUBLIC_KEYS = resp.json()
+            # Cache for 1 hour
+            KEYS_EXPIRATION = now + 3600
+        except Exception as e:
+            logger.error(f"Failed to fetch Firebase public keys: {e}")
+    return GOOGLE_PUBLIC_KEYS
+
+if not FIREBASE_PROJECT_ID:
+    logger.warning("FIREBASE_PROJECT_ID is not set! All JWT protected endpoints will return 401 Unauthorized.")
+else:
+    logger.info(f"Firebase JWT security enabled for project: {FIREBASE_PROJECT_ID}")
+
+def require_jwt(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Developer Postman Bypass: If an API_KEY is configured in the addon options,
+        # and the incoming request provides that exact key, skip JWT verification.
+        if API_KEY and request.headers.get('X-API-Key') == API_KEY:
+            return f(*args, **kwargs)
+            
+        if not FIREBASE_PROJECT_ID:
+            logger.error("Rejecting request: Firebase Project ID is not configured.")
+            return jsonify({'error': 'Firebase Project ID is not configured on the server.'}), 401
+
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+
+        token = auth_header.split(' ')[1]
+        try:
+            # Verify the token manually using PyJWT and Google's public keys
+            keys = get_google_public_keys()
+            unverified_header = jwt.get_unverified_header(token)
+            kid = unverified_header.get('kid')
+            
+            if not kid or kid not in keys:
+                return jsonify({'error': 'Invalid token signature key'}), 401
+                
+            cert = keys[kid]
+            certificate = load_pem_x509_certificate(cert.encode('utf-8'), default_backend())
+            public_key = certificate.public_key()
+            
+            decoded_token = jwt.decode(
+                token, 
+                public_key, 
+                algorithms=['RS256'],
+                audience=FIREBASE_PROJECT_ID,
+                issuer=f'https://securetoken.google.com/{FIREBASE_PROJECT_ID}'
+            )
+            # You can also attach user info to request if needed: request.user = decoded_token
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'Token has expired'}), 401
+        except Exception as e:
+            logger.error(f"JWT Verification failed: {e}")
+            return jsonify({'error': 'Invalid token format or signature'}), 401
+
+        return f(*args, **kwargs)
+    return decorated_function
 
 class StorageManager:
     """SQLite storage manager for professional data management"""
@@ -173,10 +250,9 @@ def get_ha_token():
     return jsonify({'token': SECURE_HA_TOKEN})
 
 @app.route('/api/data', methods=['POST'])
+@require_jwt
 def set_data():
     """Set custom data"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         data = request.get_json()
@@ -198,10 +274,9 @@ def set_data():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/data/<category>/<key>', methods=['GET'])
+@require_jwt
 def get_data(category, key):
     """Get specific custom data"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         value = storage.get_value(key, category)
@@ -221,10 +296,9 @@ def get_data(category, key):
 
 @app.route('/api/data', methods=['GET'])
 @app.route('/api/data/<category>', methods=['GET'])
+@require_jwt
 def get_all_data(category=None):
     """Get all custom data or data in a specific category"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         data = storage.get_all_values(category)
@@ -239,10 +313,9 @@ def get_all_data(category=None):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/search', methods=['GET'])
+@require_jwt
 def search_data():
     """Search for data"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         search_term = request.args.get('q', '')
@@ -265,10 +338,9 @@ def search_data():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/categories', methods=['GET'])
+@require_jwt
 def get_categories():
     """Get list of all categories"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         categories = storage.get_categories()
@@ -283,10 +355,9 @@ def get_categories():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/data/<category>/<key>', methods=['DELETE'])
+@require_jwt
 def delete_data(category, key):
     """Delete specific custom data"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         success = storage.delete_value(key, category)
@@ -303,10 +374,9 @@ def delete_data(category, key):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/metadata', methods=['GET'])
+@require_jwt
 def get_metadata():
     """Get storage metadata"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         metadata = storage.get_metadata()
@@ -317,10 +387,9 @@ def get_metadata():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/optimize', methods=['POST'])
+@require_jwt
 def optimize_storage():
     """Optimize storage"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         storage.optimize_storage()
@@ -334,10 +403,9 @@ def optimize_storage():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/backup', methods=['POST'])
+@require_jwt
 def backup_storage():
     """Backup storage"""
-    if not check_api_key():
-        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

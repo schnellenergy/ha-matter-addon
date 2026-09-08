@@ -17,7 +17,8 @@
     "enable_websocket": true,
     "enable_cors": true,
     "api_key": "",
-    "secure_ha_token": ""
+    "secure_ha_token": "",
+    "firebase_project_id": ""
   },
   "schema": {
     "log_level": "list(trace|debug|info|warning|error|fatal)?",
@@ -26,7 +27,8 @@
     "enable_websocket": "bool?",
     "enable_cors": "bool?",
     "api_key": "str?",
-    "secure_ha_token": "password?"
+    "secure_ha_token": "password?",
+    "firebase_project_id": "str?"
   },
   "ports": {
     "8100/tcp": 8100
