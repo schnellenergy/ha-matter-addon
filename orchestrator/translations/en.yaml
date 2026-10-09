@@ -1,0 +1,7 @@
+configuration:
+  bigquery_dataset:
+    name: "Cloud Telemetry Dataset"
+    description: "The name of the BigQuery dataset used for logging events."
+  bigquery_table:
+    name: "Crash Reports Table"
+    description: "The specific table to store crash reports and recovery actions."
