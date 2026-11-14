@@ -6,3 +6,10 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Credentials - NEVER commit. The .b64 extension previously bypassed the
+# single .json rule below and published a live key to a public repo.
+*firebase-service-account*
+*.b64
+*service-account*.json
+*-key.json

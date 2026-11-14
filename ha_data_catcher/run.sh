@@ -3,8 +3,15 @@ set -e
 
 echo "[Data Collector] Starting Home Assistant Data Collector Add-on..."
 
-if [ -f /firebase-service-account.b64 ]; then
-    base64 -d /firebase-service-account.b64 > /firebase-service-account.json
+# Firebase credentials come from the add-on options, never from the image.
+if [ -f /data/options.json ]; then
+    FB_CRED=$(jq -r '.firebase_credentials_b64 // empty' /data/options.json)
+    if [ -n "$FB_CRED" ]; then
+        printf '%s' "$FB_CRED" | base64 -d > /firebase-service-account.json
+        chmod 600 /firebase-service-account.json
+    else
+        echo "[Data Collector] No Firebase credentials configured - Firestore sync disabled."
+    fi
 fi
 
 # Launch the python application in unbuffered mode so logs appear instantly

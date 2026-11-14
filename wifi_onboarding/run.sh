@@ -315,9 +315,16 @@ export PYTHONPATH="/usr/lib/python3/dist-packages:$PYTHONPATH"
 export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
 echo "[INFO] ✅ PYTHONPATH set to: $PYTHONPATH"
 
-if [ -f /firebase-service-account.b64 ]; then
-    echo "[INFO] Decoding Firebase credentials..."
-    base64 -d /firebase-service-account.b64 > /firebase-service-account.json
+# Firebase credentials come from the add-on options, never from the image.
+if [ -f /data/options.json ]; then
+    FB_CRED=$(jq -r '.firebase_credentials_b64 // empty' /data/options.json)
+    if [ -n "$FB_CRED" ]; then
+        echo "[INFO] Decoding Firebase credentials from add-on options..."
+        printf '%s' "$FB_CRED" | base64 -d > /firebase-service-account.json
+        chmod 600 /firebase-service-account.json
+    else
+        echo "[INFO] No Firebase credentials configured - Firestore sync disabled."
+    fi
 fi
 
 python3 -u /improved_ble_service.py

@@ -60,7 +60,8 @@
     "use_static_ip": false,
     "static_ip": "",
     "static_gateway": "",
-    "static_dns": "8.8.8.8"
+    "static_dns": "8.8.8.8",
+    "firebase_credentials_b64": ""
   },
   "schema": {
     "gpio_pin": "int(1,40)",
@@ -75,7 +76,8 @@
     "use_static_ip": "bool",
     "static_ip": "str",
     "static_gateway": "str",
-    "static_dns": "str"
+    "static_dns": "str",
+    "firebase_credentials_b64": "password?"
   },
   "map": [
     "config:rw",

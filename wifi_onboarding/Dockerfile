@@ -151,7 +151,9 @@ COPY button_monitor.py /button_monitor.py
 COPY improved_ble_service.py /improved_ble_service.py
 COPY supervisor_api.py /supervisor_api.py
 COPY firestore_helper.py /firestore_helper.py
-COPY firebase-service-account.b64 /firebase-service-account.b64
+# Firebase credentials are NOT baked into the image. They are supplied at
+# runtime through the add-on option `firebase_credentials_b64` and decoded
+# by run.sh. A key committed here is published to every user of the add-on.
 COPY led_states.py /led_states.py
 COPY led_controller.py /led_controller.py
 COPY gpio_cleanup.py /gpio_cleanup.py
